@@ -2,11 +2,12 @@ import argparse
 import os
 import time
 
-import gym
+import gymnasium as gym
 import numpy as np
 import torch
 
 import TD7
+from gymnasium.wrappers import TimeLimit
 
 
 def train_online(RL_agent, env, eval_env, args):
@@ -14,7 +15,8 @@ def train_online(RL_agent, env, eval_env, args):
 	start_time = time.time()
 	allow_train = False
 
-	state, ep_finished = env.reset(), False
+	state, info = env.reset(seed=args.seed)
+	ep_finished = False
 	ep_total_reward, ep_timesteps, ep_num = 0, 0, 1
 
 	for t in range(int(args.max_timesteps+1)):
@@ -25,13 +27,13 @@ def train_online(RL_agent, env, eval_env, args):
 		else:
 			action = env.action_space.sample()
 
-		next_state, reward, ep_finished, _ = env.step(action) 
+		next_state, reward, terminated, truncated, _ = env.step(action)
+		ep_finished = terminated or truncated
 		
 		ep_total_reward += reward
 		ep_timesteps += 1
 
-		done = float(ep_finished) if ep_timesteps < env._max_episode_steps else 0
-		RL_agent.replay_buffer.add(state, action, next_state, reward, done)
+		RL_agent.replay_buffer.add(state, action, next_state, reward, ep_finished)
 
 		state = next_state
 
@@ -47,7 +49,8 @@ def train_online(RL_agent, env, eval_env, args):
 			if t >= args.timesteps_before_training:
 				allow_train = True
 
-			state, done = env.reset(), False
+			state, info = env.reset(seed=args.seed)
+			ep_finished = False
 			ep_total_reward, ep_timesteps = 0, 0
 			ep_num += 1 
 
@@ -71,10 +74,13 @@ def maybe_evaluate_and_print(RL_agent, eval_env, evals, t, start_time, args, d4r
 
 		total_reward = np.zeros(args.eval_eps)
 		for ep in range(args.eval_eps):
-			state, done = eval_env.reset(), False
+			state, info = eval_env.reset()
+			done = False
 			while not done:
-				action = RL_agent.select_action(np.array(state), args.use_checkpoints, use_exploration=False)
-				state, reward, done, _ = eval_env.step(action)
+				# print(f"{state=}")
+				action = RL_agent.select_action(state, args.use_checkpoints, use_exploration=False)
+				state, reward, terminated, truncated, _ = eval_env.step(action)
+				done = terminated or truncated
 				total_reward[ep] += reward
 
 		print(f"Average total reward over {args.eval_eps} episodes: {total_reward.mean():.3f}")
@@ -123,12 +129,12 @@ if __name__ == "__main__":
 	print(f"Algorithm: TD7, Env: {args.env}, Seed: {args.seed}")
 	print("---------------------------------------")
 
-	env.seed(args.seed)
+	env.reset(seed=args.seed)
 	env.action_space.seed(args.seed)
-	eval_env.seed(args.seed+100)
+	eval_env.reset(seed=args.seed+100)
 	torch.manual_seed(args.seed)
 	np.random.seed(args.seed)
-	
+
 	state_dim = env.observation_space.shape[0]
 	action_dim = env.action_space.shape[0] 
 	max_action = float(env.action_space.high[0])

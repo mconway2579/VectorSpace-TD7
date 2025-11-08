@@ -152,6 +152,16 @@ class Agent(object):
 		# Changing hyperparameters example: hp=Hyperparameters(batch_size=128)
 		
 		self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+		try:
+			if torch.cuda.is_available():
+				self.device = torch.device("cuda")
+			elif torch.backends.mps.is_available():
+				self.device = torch.device("mps")
+			else:
+				self.device = torch.device("cpu")
+		except Exception:
+			self.device = torch.device("cpu")
+		print(f"Using device: {self.device}")
 		self.hp = hp
 
 		self.actor = Actor(state_dim, action_dim, hp.zs_dim, hp.actor_hdim, hp.actor_activ).to(self.device)
