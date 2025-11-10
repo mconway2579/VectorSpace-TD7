@@ -75,15 +75,3 @@ class LAP(object):
 
 	def reset_max_priority(self):
 		self.max_priority = float(self.priority[:self.size].max())
-
-
-	def load_D4RL(self, dataset):
-		self.state = dataset['observations']
-		self.action = dataset['actions']
-		self.next_state = dataset['next_observations']
-		self.reward = dataset['rewards'].reshape(-1,1)
-		self.not_done = 1. - dataset['terminals'].reshape(-1,1)
-		self.size = self.state.shape[0]
-		
-		if self.prioritized:
-			self.priority = torch.ones(self.size).to(self.device)

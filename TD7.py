@@ -110,6 +110,42 @@ class Encoder(nn.Module):
 		zsa = self.activ(self.zsa2(zsa))
 		zsa = self.zsa3(zsa)
 		return zsa
+	
+
+class MyEncoder(nn.Module):
+	def __init__(self, state_dim, action_dim, zs_dim=256, hdim=256, activ=F.elu):
+		super(MyEncoder, self).__init__()
+
+		self.activ = activ
+
+		# state encoder
+		self.zs1 = nn.Linear(state_dim, hdim)
+		self.zs2 = nn.Linear(hdim, hdim)
+		self.zs3 = nn.Linear(hdim, zs_dim)
+		
+		# action encoder
+		self.za1 = nn.Linear(action_dim, hdim)
+		self.za2 = nn.Linear(hdim, hdim)
+		self.za3 = nn.Linear(hdim, zs_dim)
+	
+
+	def zs(self, state):
+		zs = self.activ(self.zs1(state))
+		zs = self.activ(self.zs2(zs))
+		zs = AvgL1Norm(self.zs3(zs))
+		return zs
+	
+	def za(self, action):
+		za = self.activ(self.za1(action))
+		za = self.activ(self.za2(za))
+		za = AvgL1Norm(self.za3(za))
+		return za
+
+	def zsa(self, zs, action):
+		za = self.za(action)
+		zsa = zs + za
+		return zsa
+
 
 
 class Critic(nn.Module):
@@ -148,7 +184,7 @@ class Critic(nn.Module):
 
 
 class Agent(object):
-	def __init__(self, state_dim, action_dim, max_action, offline=False, hp=Hyperparameters()): 
+	def __init__(self, state_dim, action_dim, max_action, hp=Hyperparameters(), use_my_encoder=False): 
 		# Changing hyperparameters example: hp=Hyperparameters(batch_size=128)
 		
 		self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -171,8 +207,11 @@ class Agent(object):
 		self.critic = Critic(state_dim, action_dim, hp.zs_dim, hp.critic_hdim, hp.critic_activ).to(self.device)
 		self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=hp.critic_lr)
 		self.critic_target = copy.deepcopy(self.critic)
-
-		self.encoder = Encoder(state_dim, action_dim, hp.zs_dim, hp.enc_hdim, hp.enc_activ).to(self.device)
+		self.encoder = None
+		if use_my_encoder:
+			self.encoder = MyEncoder(state_dim, action_dim, hp.zs_dim, hp.enc_hdim, hp.enc_activ).to(self.device)
+		else:
+			self.encoder = Encoder(state_dim, action_dim, hp.zs_dim, hp.enc_hdim, hp.enc_activ).to(self.device)
 		self.encoder_optimizer = torch.optim.Adam(self.encoder.parameters(), lr=hp.encoder_lr)
 		self.fixed_encoder = copy.deepcopy(self.encoder)
 		self.fixed_encoder_target = copy.deepcopy(self.encoder)
@@ -184,7 +223,6 @@ class Agent(object):
 			max_action, normalize_actions=True, prioritized=True)
 
 		self.max_action = max_action
-		self.offline = offline
 
 		self.training_steps = 0
 
@@ -281,8 +319,6 @@ class Agent(object):
 			Q = self.critic(state, actor, fixed_zsa, fixed_zs)
 
 			actor_loss = -Q.mean() 
-			if self.offline:
-				actor_loss = actor_loss + self.hp.lmbda * Q.abs().mean().detach() * F.mse_loss(actor, action)
 
 			self.actor_optimizer.zero_grad()
 			actor_loss.backward()

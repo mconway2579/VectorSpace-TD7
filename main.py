@@ -8,7 +8,7 @@ import torch
 
 import TD7
 from gymnasium.wrappers import TimeLimit
-
+from eval import maybe_record_videos, plot_rewards
 
 def train_online(RL_agent, env, eval_env, args):
 	evals = []
@@ -21,6 +21,7 @@ def train_online(RL_agent, env, eval_env, args):
 
 	for t in range(int(args.max_timesteps+1)):
 		maybe_evaluate_and_print(RL_agent, eval_env, evals, t, start_time, args)
+		maybe_record_videos(RL_agent, eval_env, t, args)
 		
 		if allow_train:
 			action = RL_agent.select_action(np.array(state))
@@ -53,20 +54,10 @@ def train_online(RL_agent, env, eval_env, args):
 			ep_finished = False
 			ep_total_reward, ep_timesteps = 0, 0
 			ep_num += 1 
+	return evals
 
 
-def train_offline(RL_agent, env, eval_env, args):
-	RL_agent.replay_buffer.load_D4RL(d4rl.qlearning_dataset(env))
-
-	evals = []
-	start_time = time.time()
-
-	for t in range(int(args.max_timesteps+1)):
-		maybe_evaluate_and_print(RL_agent, eval_env, evals, t, start_time, args, d4rl=True)
-		RL_agent.train()
-
-
-def maybe_evaluate_and_print(RL_agent, eval_env, evals, t, start_time, args, d4rl=False):
+def maybe_evaluate_and_print(RL_agent, eval_env, evals, t, start_time, args):
 	if t % args.eval_freq == 0:
 		print("---------------------------------------")
 		print(f"Evaluation at {t} time steps")
@@ -77,53 +68,56 @@ def maybe_evaluate_and_print(RL_agent, eval_env, evals, t, start_time, args, d4r
 			state, info = eval_env.reset()
 			done = False
 			while not done:
-				# print(f"{state=}")
 				action = RL_agent.select_action(state, args.use_checkpoints, use_exploration=False)
 				state, reward, terminated, truncated, _ = eval_env.step(action)
 				done = terminated or truncated
 				total_reward[ep] += reward
 
 		print(f"Average total reward over {args.eval_eps} episodes: {total_reward.mean():.3f}")
-		if d4rl:
-			total_reward = eval_env.get_normalized_score(total_reward) * 100
-			print(f"D4RL score: {total_reward.mean():.3f}")
-		
 		print("---------------------------------------")
 
 		evals.append(total_reward)
-		np.save(f"./results/{args.file_name}", evals)
+		np.save(f"{args.save_dir}/evals.npy", evals)
+		plot_rewards(evals, args)
 
 
 if __name__ == "__main__":
 	parser = argparse.ArgumentParser()
+	# Encoder
+	parser.add_argument("--encoder", type=str, choices=["mine", "td7"], default="td7",
+						help="Which encoder to use ('mine' or 'td7').")
 	# RL
-	parser.add_argument("--env", default="HalfCheetah-v4", type=str)
+	parser.add_argument("--env", default="HalfCheetah-v5", type=str)
 	parser.add_argument("--seed", default=0, type=int)
-	parser.add_argument("--offline", default=False, action=argparse.BooleanOptionalAction)
 	parser.add_argument('--use_checkpoints', default=True, action=argparse.BooleanOptionalAction)
 	# Evaluation
 	parser.add_argument("--timesteps_before_training", default=25e3, type=int)
 	parser.add_argument("--eval_freq", default=5e3, type=int)
 	parser.add_argument("--eval_eps", default=10, type=int)
 	parser.add_argument("--max_timesteps", default=5e6, type=int)
+	# Recording
+	parser.add_argument("--record_freq", default=1e6, type=int)
+	parser.add_argument("--record_eps", default=5, type=int)
 	# File
-	parser.add_argument('--file_name', default=None)
-	parser.add_argument('--d4rl_path', default="./d4rl_datasets", type=str)
+	parser.add_argument('--dir_name', default=None)
 	args = parser.parse_args()
 	
-	if args.offline:
-		import d4rl
-		d4rl.set_dataset_path(args.d4rl_path)
-		args.use_checkpoints = False
 
-	if args.file_name is None:
-		args.file_name = f"TD7_{args.env}_{args.seed}"
+	if args.dir_name is None:
+		args.dir_name = f"{args.encoder}_{args.env}_seed_{args.seed}"
 
 	if not os.path.exists("./results"):
 		os.makedirs("./results")
 
-	env = gym.make(args.env)
-	eval_env = gym.make(args.env)
+	save_dir = os.path.join("./results", args.dir_name)
+	os.makedirs(save_dir, exist_ok=True)
+	recording_dir = os.path.join(save_dir, "recordings")
+	os.makedirs(recording_dir, exist_ok=True)
+	args.save_dir = save_dir
+	args.recording_dir = recording_dir
+
+	env = gym.make(args.env, render_mode="rgb_array")
+	eval_env = gym.make(args.env, render_mode="rgb_array")
 
 	print("---------------------------------------")
 	print(f"Algorithm: TD7, Env: {args.env}, Seed: {args.seed}")
@@ -139,9 +133,12 @@ if __name__ == "__main__":
 	action_dim = env.action_space.shape[0] 
 	max_action = float(env.action_space.high[0])
 
-	RL_agent = TD7.Agent(state_dim, action_dim, max_action, args.offline)
+	RL_agent = TD7.Agent(state_dim, action_dim, max_action, use_my_encoder=args.encoder=="mine")
 
-	if args.offline:
-		train_offline(RL_agent, env, eval_env, args)
-	else:
-		train_online(RL_agent, env, eval_env, args)
+	total_reward_samples = train_online(RL_agent, env, eval_env, args)
+	plot_rewards(total_reward_samples, args)
+	maybe_record_videos(RL_agent, eval_env, 0, args, extension="_final")
+
+	model_dir = os.path.join(save_dir, "models")
+	os.makedirs(model_dir, exist_ok=True)
+	print("this is where I would save the models")
