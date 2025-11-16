@@ -22,12 +22,12 @@ def plot_rewards(reward_samples, args, extension=""):
     plt.close()
 
 def maybe_record_videos(RL_agent, eval_env, t, args, extension=""):
-    print(f"Recording videos at timestep {t}")
+    # print(f"Recording videos at timestep {t}")
     if t % args.record_freq == 0 or extension != "":
         header = f"_{t}" if extension == "" else extension
         video_dir = os.path.join(args.recording_dir, f"videos" + header)
         os.makedirs(video_dir, exist_ok=True)
-        print(f"Recording videos to {video_dir}")
+        # print(f"Recording videos to {video_dir}")
         for ep in range(args.record_eps):
             state, info = eval_env.reset()
             done = False

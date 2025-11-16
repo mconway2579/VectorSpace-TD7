@@ -10,6 +10,13 @@ import torch.nn.functional as F
 import buffer
 
 
+from nflows.flows.base import Flow
+from nflows.distributions.normal import ConditionalDiagonalNormal, StandardNormal
+from nflows.transforms.base import CompositeTransform
+from nflows.transforms.coupling import AffineCouplingTransform
+
+from nflows.transforms.autoregressive import MaskedAffineAutoregressiveTransform
+from nflows.nn.nets import ResidualNet
 @dataclass
 class Hyperparameters:
 	# Generic
@@ -81,9 +88,9 @@ class Actor(nn.Module):
 		return torch.tanh(self.l3(a))
 
 
-class Encoder(nn.Module):
+class TD7Encoder(nn.Module):
 	def __init__(self, state_dim, action_dim, zs_dim=256, hdim=256, activ=F.elu):
-		super(Encoder, self).__init__()
+		super(TD7Encoder, self).__init__()
 
 		self.activ = activ
 
@@ -104,9 +111,14 @@ class Encoder(nn.Module):
 		zs = AvgL1Norm(self.zs3(zs))
 		return zs
 
+	def za(self, action):
+		return action
 
-	def zsa(self, zs, action):
-		zsa = self.activ(self.zsa1(torch.cat([zs, action], 1)))
+	def a(self, za):
+		return za
+
+	def zsa(self, zs, za):
+		zsa = self.activ(self.zsa1(torch.cat([zs, za], 1)))
 		zsa = self.activ(self.zsa2(zsa))
 		zsa = self.zsa3(zsa)
 		return zsa
@@ -127,6 +139,11 @@ class MyEncoder(nn.Module):
 		self.za1 = nn.Linear(action_dim, hdim)
 		self.za2 = nn.Linear(hdim, hdim)
 		self.za3 = nn.Linear(hdim, zs_dim)
+
+		# action decoder
+		self.a1 = nn.Linear(zs_dim, hdim)
+		self.a2 = nn.Linear(hdim, hdim)
+		self.a3 = nn.Linear(hdim, action_dim)
 	
 
 	def zs(self, state):
@@ -141,9 +158,94 @@ class MyEncoder(nn.Module):
 		za = AvgL1Norm(self.za3(za))
 		return za
 
-	def zsa(self, zs, action):
-		za = self.za(action)
-		zsa = zs + za
+	def a(self, za):
+		a = self.activ(self.a1(za))
+		a = self.activ(self.a2(a))
+		a = self.a3(a)
+		return a
+
+
+	def zsa(self, zs, za):
+		zsa = AvgL1Norm(zs + za)
+		return zsa
+	
+class NFlowEncoder(nn.Module):
+	def __init__(self, state_dim, action_dim, zs_dim=256, hdim=256, activ=F.elu):
+		super(NFlowEncoder, self).__init__()
+
+		self.activ = activ
+
+		# state encoder
+		self.zs1 = nn.Linear(state_dim, hdim)
+		self.zs2 = nn.Linear(hdim, hdim)
+		self.zs3 = nn.Linear(hdim, zs_dim)
+		
+		# action encoder
+		self.za1 = nn.Linear(action_dim, hdim)
+		self.za2 = nn.Linear(hdim, hdim)
+		self.za3 = nn.Linear(hdim, zs_dim)
+
+		# action decoder
+		self.a1 = nn.Linear(zs_dim, hdim)
+		self.a2 = nn.Linear(hdim, hdim)
+		self.a3 = nn.Linear(hdim, action_dim)
+
+		# ---- flow for z* | (zs, za) ----
+		flow_features = zs_dim            # dim of the random variable (*)
+		context_dim = 2 * zs_dim          # dim of [zs, za]
+
+		# simple 0/1 mask: half of dims transformed, half passthrough
+		mask = torch.zeros(flow_features)
+		mask[::2] = 1.0
+		self.register_buffer("mask", mask)
+
+		def make_transform_net(in_features, out_features):
+			# small residual net: cheap but expressive enough
+			return ResidualNet(
+				in_features=in_features,
+				out_features=out_features,
+				hidden_features=hdim,     # keep this modest
+				num_blocks=1,
+				context_features=context_dim,
+				activation=F.elu,
+				dropout_probability=0.0,
+				use_batch_norm=False,
+			)
+
+		coupling = AffineCouplingTransform(
+			mask=self.mask,
+			transform_net_create_fn=make_transform_net,
+		)
+
+		transform = CompositeTransform([coupling])  # exactly one transform
+		base_dist = StandardNormal(shape=[flow_features])
+
+		self.flow = Flow(transform, base_dist)
+
+	
+
+	def zs(self, state):
+		zs = self.activ(self.zs1(state))
+		zs = self.activ(self.zs2(zs))
+		zs = AvgL1Norm(self.zs3(zs))
+		return zs
+	
+	def za(self, action):
+		za = self.activ(self.za1(action))
+		za = self.activ(self.za2(za))
+		za = AvgL1Norm(self.za3(za))
+		return za
+	
+	def a(self, za):
+		a = self.activ(self.a1(za))
+		a = self.activ(self.a2(a))
+		a = self.a3(a)
+		return a
+	
+	def zsa(self, zs, za):
+		context = torch.cat([zs, za], dim=-1)
+		zsa = self.flow.sample(1, context=context)
+		zsa = zsa.squeeze(1)                            # [B, zs_dim]
 		return zsa
 
 
@@ -184,9 +286,9 @@ class Critic(nn.Module):
 
 
 class Agent(object):
-	def __init__(self, state_dim, action_dim, max_action, hp=Hyperparameters(), use_my_encoder=False): 
+	def __init__(self, state_dim, action_dim, max_action, args, hp=Hyperparameters()): 
 		# Changing hyperparameters example: hp=Hyperparameters(batch_size=128)
-		
+		self.args = args
 		self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 		try:
 			if torch.cuda.is_available():
@@ -208,10 +310,14 @@ class Agent(object):
 		self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=hp.critic_lr)
 		self.critic_target = copy.deepcopy(self.critic)
 		self.encoder = None
-		if use_my_encoder:
+		if args.encoder == "addition":
 			self.encoder = MyEncoder(state_dim, action_dim, hp.zs_dim, hp.enc_hdim, hp.enc_activ).to(self.device)
+		elif args.encoder == "nflow":
+			self.encoder = NFlowEncoder(state_dim, action_dim, hp.zs_dim, hp.enc_hdim, hp.enc_activ).to(self.device)
+		elif args.encoder == "td7":
+			self.encoder = TD7Encoder(state_dim, action_dim, hp.zs_dim, hp.enc_hdim, hp.enc_activ).to(self.device)
 		else:
-			self.encoder = Encoder(state_dim, action_dim, hp.zs_dim, hp.enc_hdim, hp.enc_activ).to(self.device)
+			raise ValueError(f"Unknown encoder type: {args.encoder}")
 		self.encoder_optimizer = torch.optim.Adam(self.encoder.parameters(), lr=hp.encoder_lr)
 		self.fixed_encoder = copy.deepcopy(self.encoder)
 		self.fixed_encoder_target = copy.deepcopy(self.encoder)
@@ -252,7 +358,7 @@ class Agent(object):
 				action = self.actor(state, zs) 
 			
 			if use_exploration: 
-				action = action + torch.randn_like(action) * self.hp.exploration_noise
+				action = action + torch.randn_like(action) * self.hp.exploration_noise				
 
 			return action.clamp(-1,1).cpu().data.numpy().flatten() * self.max_action
 
@@ -269,11 +375,24 @@ class Agent(object):
 			next_zs = self.encoder.zs(next_state)
 
 		zs = self.encoder.zs(state)
-		pred_zs = self.encoder.zsa(zs, action)
-		encoder_loss = F.mse_loss(pred_zs, next_zs)
+		za = self.encoder.za(action)
+		if self.args.encoder == "nflow":
+			context = torch.cat([zs, za], dim=-1)
+			log_prob = self.encoder.flow.log_prob(next_zs, context=context)
+			encoder_loss = -log_prob.mean()
+		elif self.args.encoder == "addition" or self.args.encoder == "td7":
+			pred_zs = self.encoder.zsa(zs, za)
+			encoder_loss = F.mse_loss(pred_zs, next_zs)
+		else:
+			raise ValueError(f"[train] Unknown encoder type: {self.args.encoder}")
+		
+		decoder_loss = self.encoder.a(za)
+		decoder_loss = F.mse_loss(decoder_loss, action)
+
+		total_loss = encoder_loss + decoder_loss
 
 		self.encoder_optimizer.zero_grad()
-		encoder_loss.backward()
+		total_loss.backward()
 		self.encoder_optimizer.step()
 
 		#########################
@@ -284,8 +403,8 @@ class Agent(object):
 
 			noise = (torch.randn_like(action) * self.hp.target_policy_noise).clamp(-self.hp.noise_clip, self.hp.noise_clip)
 			next_action = (self.actor_target(next_state, fixed_target_zs) + noise).clamp(-1,1)
-			
-			fixed_target_zsa = self.fixed_encoder_target.zsa(fixed_target_zs, next_action)
+			fixed_target_za = self.fixed_encoder_target.za(next_action)
+			fixed_target_zsa = self.fixed_encoder_target.zsa(fixed_target_zs, fixed_target_za)
 
 			Q_target = self.critic_target(next_state, next_action, fixed_target_zsa, fixed_target_zs).min(1,keepdim=True)[0]
 			Q_target = reward + not_done * self.hp.discount * Q_target.clamp(self.min_target, self.max_target)
@@ -294,7 +413,8 @@ class Agent(object):
 			self.min = min(self.min, float(Q_target.min()))
 
 			fixed_zs = self.fixed_encoder.zs(state)
-			fixed_zsa = self.fixed_encoder.zsa(fixed_zs, action)
+			fixed_za = self.fixed_encoder.za(action)
+			fixed_zsa = self.fixed_encoder.zsa(fixed_zs, fixed_za)
 
 		Q = self.critic(state, action, fixed_zsa, fixed_zs)
 		td_loss = (Q - Q_target).abs()
@@ -315,7 +435,8 @@ class Agent(object):
 		#########################
 		if self.training_steps % self.hp.policy_freq == 0:
 			actor = self.actor(state, fixed_zs)
-			fixed_zsa = self.fixed_encoder.zsa(fixed_zs, actor)
+			actor_encoding = self.encoder.za(actor)
+			fixed_zsa = self.fixed_encoder.zsa(fixed_zs, actor_encoding)
 			Q = self.critic(state, actor, fixed_zsa, fixed_zs)
 
 			actor_loss = -Q.mean() 

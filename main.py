@@ -81,28 +81,7 @@ def maybe_evaluate_and_print(RL_agent, eval_env, evals, t, start_time, args):
 		plot_rewards(evals, args)
 
 
-if __name__ == "__main__":
-	parser = argparse.ArgumentParser()
-	# Encoder
-	parser.add_argument("--encoder", type=str, choices=["mine", "td7"], default="td7",
-						help="Which encoder to use ('mine' or 'td7').")
-	# RL
-	parser.add_argument("--env", default="HalfCheetah-v5", type=str)
-	parser.add_argument("--seed", default=0, type=int)
-	parser.add_argument('--use_checkpoints', default=True, action=argparse.BooleanOptionalAction)
-	# Evaluation
-	parser.add_argument("--timesteps_before_training", default=25e3, type=int)
-	parser.add_argument("--eval_freq", default=5e3, type=int)
-	parser.add_argument("--eval_eps", default=10, type=int)
-	parser.add_argument("--max_timesteps", default=5e6, type=int)
-	# Recording
-	parser.add_argument("--record_freq", default=1e6, type=int)
-	parser.add_argument("--record_eps", default=5, type=int)
-	# File
-	parser.add_argument('--dir_name', default=None)
-	args = parser.parse_args()
-	
-
+def main(args):
 	if args.dir_name is None:
 		args.dir_name = f"{args.encoder}_{args.env}_seed_{args.seed}"
 
@@ -133,7 +112,7 @@ if __name__ == "__main__":
 	action_dim = env.action_space.shape[0] 
 	max_action = float(env.action_space.high[0])
 
-	RL_agent = TD7.Agent(state_dim, action_dim, max_action, use_my_encoder=args.encoder=="mine")
+	RL_agent = TD7.Agent(state_dim, action_dim, max_action, args)
 
 	total_reward_samples = train_online(RL_agent, env, eval_env, args)
 	plot_rewards(total_reward_samples, args)
@@ -142,3 +121,33 @@ if __name__ == "__main__":
 	model_dir = os.path.join(save_dir, "models")
 	os.makedirs(model_dir, exist_ok=True)
 	print("this is where I would save the models")
+
+
+if __name__ == "__main__":
+	parser = argparse.ArgumentParser()
+	# Encoder
+	parser.add_argument("--encoder", type=str, choices=["addition", "td7", "nflow"], default="td7",
+						help="Which encoder to use ('addition', 'td7', or 'nflow').")
+	# RL
+	parser.add_argument("--env", default="HalfCheetah-v5", type=str)
+	parser.add_argument("--seed", default=0, type=int)
+	parser.add_argument('--use_checkpoints', default=True, action=argparse.BooleanOptionalAction)
+
+	#Action Behavior
+	parser.add_argument("--action_space", type=str, choices=["environment", "embedding"], default="environment",
+						help="Which space to produce actions in ('environment', or 'embedding').")
+	# Evaluation
+	parser.add_argument("--timesteps_before_training", default=25e3, type=int)
+	parser.add_argument("--eval_freq", default=5e3, type=int)
+	parser.add_argument("--eval_eps", default=10, type=int)
+	parser.add_argument("--max_timesteps", default=2e6, type=int)
+	# Recording
+	parser.add_argument("--record_freq", default=1e5, type=int)
+	parser.add_argument("--record_eps", default=5, type=int)
+	# File
+	parser.add_argument('--dir_name', default=None)
+	args = parser.parse_args()
+	main(args)
+	
+
+	
