@@ -1,4 +1,5 @@
 import argparse
+import gc
 import os
 import time
 
@@ -8,7 +9,7 @@ import torch
 
 import TD7
 from gymnasium.wrappers import TimeLimit
-from eval import maybe_record_videos, plot_rewards
+from eval import maybe_record_videos, plot_rewards, maybe_plot_loss_histories
 
 def train_online(RL_agent, env, eval_env, args):
 	evals = []
@@ -22,6 +23,7 @@ def train_online(RL_agent, env, eval_env, args):
 	for t in range(int(args.max_timesteps+1)):
 		maybe_evaluate_and_print(RL_agent, eval_env, evals, t, start_time, args)
 		maybe_record_videos(RL_agent, eval_env, t, args)
+		maybe_plot_loss_histories(RL_agent.loss_histories, t, args)
 		
 		if allow_train:
 			action = RL_agent.select_action(np.array(state))
@@ -50,7 +52,9 @@ def train_online(RL_agent, env, eval_env, args):
 			if t >= args.timesteps_before_training:
 				allow_train = True
 
-			state, info = env.reset(seed=args.seed)
+			# state, info = env.reset(seed=args.seed)
+			state, info = env.reset()
+
 			ep_finished = False
 			ep_total_reward, ep_timesteps = 0, 0
 			ep_num += 1 
@@ -100,6 +104,7 @@ def main(args):
 
 	print("---------------------------------------")
 	print(f"Algorithm: TD7, Env: {args.env}, Seed: {args.seed}")
+	print(f"Saved directory: {save_dir}")
 	print("---------------------------------------")
 
 	env.reset(seed=args.seed)
@@ -117,10 +122,20 @@ def main(args):
 	total_reward_samples = train_online(RL_agent, env, eval_env, args)
 	plot_rewards(total_reward_samples, args)
 	maybe_record_videos(RL_agent, eval_env, 0, args, extension="_final")
+	maybe_plot_loss_histories(RL_agent.loss_histories, np.ceil(args.max_timesteps/args.plot_loss_freq)*args.plot_loss_freq, args)
 
 	model_dir = os.path.join(save_dir, "models")
 	os.makedirs(model_dir, exist_ok=True)
 	print("this is where I would save the models")
+
+	# Close gym envs explicitly
+	env.close()
+	eval_env.close()
+
+	# Drop references to big objects
+	del RL_agent
+	del env, eval_env
+	del total_reward_samples
 
 
 if __name__ == "__main__":
@@ -140,14 +155,35 @@ if __name__ == "__main__":
 	parser.add_argument("--timesteps_before_training", default=25e3, type=int)
 	parser.add_argument("--eval_freq", default=5e3, type=int)
 	parser.add_argument("--eval_eps", default=10, type=int)
+	# parser.add_argument("--max_timesteps", default=5e6, type=int)
 	parser.add_argument("--max_timesteps", default=2e6, type=int)
 	# Recording
+	parser.add_argument("--record_videos", default=True, action=argparse.BooleanOptionalAction)
 	parser.add_argument("--record_freq", default=1e5, type=int)
 	parser.add_argument("--record_eps", default=5, type=int)
+	parser.add_argument("--plot_loss_freq", default=1e5, type=int)
 	# File
 	parser.add_argument('--dir_name', default=None)
-	args = parser.parse_args()
-	main(args)
 	
+	#main(args)
+	for action_space in ["environment"]: #"embedding", 
+		for encoder in ["nflow", "addition", "td7"]:
+			args = parser.parse_args()
+			if action_space == "embedding" and encoder == "td7":
+				continue
+			args.encoder = encoder
+			args.action_space = action_space
+			if action_space == "environment":
+				args.dir_name = f"{encoder}_{args.env}_envaction_seed_{args.seed}"
+			else:
+				args.dir_name = f"{encoder}_{args.env}_embaction_seed_{args.seed}"
+			main(args)
+			gc.collect()  # Python garbage collection
+			if torch.cuda.is_available():
+				torch.cuda.empty_cache()
+				torch.cuda.ipc_collect()
+			# For MPS (Apple Silicon) if you ever use it:
+			if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+				torch.mps.empty_cache()
 
 	

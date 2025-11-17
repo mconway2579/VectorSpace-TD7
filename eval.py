@@ -21,9 +21,30 @@ def plot_rewards(reward_samples, args, extension=""):
     plt.savefig(save_path)
     plt.close()
 
+def maybe_plot_loss_histories(loss_histories, t, args):
+    if t % args.plot_loss_freq != 0 and t != 0:
+        return
+    print("Plotting loss histories...")
+    for loss_name, history in loss_histories.items():
+        if not history:
+            continue
+        history = np.array(history)
+        steps = history[:, 0]
+        values = history[:, 1]
+        plt.figure(figsize=(10, 6))
+        plt.plot(steps, values)
+        plt.xlabel('Training Steps')
+        plt.ylabel(loss_name)
+        plt.title(f'{loss_name} over Training Steps')
+        plt.grid()
+        save_path = os.path.join(args.save_dir, f"{loss_name}_history.png")
+        plt.savefig(save_path)
+        print(f"Saved {loss_name} history plot to {save_path}")
+        plt.close()
+
 def maybe_record_videos(RL_agent, eval_env, t, args, extension=""):
     # print(f"Recording videos at timestep {t}")
-    if t % args.record_freq == 0 or extension != "":
+    if (t % args.record_freq == 0 or extension != "") and args.record_videos:
         header = f"_{t}" if extension == "" else extension
         video_dir = os.path.join(args.recording_dir, f"videos" + header)
         os.makedirs(video_dir, exist_ok=True)

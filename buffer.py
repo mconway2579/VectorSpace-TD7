@@ -70,7 +70,8 @@ class LAP(object):
 
 	def update_priority(self, priority):
 		self.priority[self.ind] = priority.reshape(-1).detach()
-		self.max_priority = max(float(priority.max()), self.max_priority)
+		# self.max_priority = max(float(priority.max()), self.max_priority)
+		self.max_priority = max(float(priority.detach().max().item()), self.max_priority)
 
 
 	def reset_max_priority(self):
