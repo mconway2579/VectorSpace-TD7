@@ -1,0 +1,66 @@
+import numpy as np
+import torch
+from dataclasses import dataclass
+from typing import Callable
+import torch.nn.functional as F
+
+def AvgL1Norm(x, eps=1e-8):
+	return x/x.abs().mean(-1,keepdim=True).clamp(min=eps)
+
+def LAP_huber(x, min_priority=1):
+	return torch.where(x < min_priority, 0.5 * x.pow(2), min_priority * x).sum(1).mean()
+
+
+class DummyOptimizer:
+	def zero_grad(self):
+		pass
+	
+	def step(self):
+		pass
+
+
+@dataclass
+class Hyperparameters:
+	# Generic
+	batch_size: int = 256
+	buffer_size: int = 1e6
+	discount: float = 0.99
+	target_update_rate: int = 250
+	exploration_noise: float = 0.1
+	
+	# TD3
+	target_policy_noise: float = 0.2
+	noise_clip: float = 0.5
+	policy_freq: int = 2
+	
+	# LAP
+	alpha: float = 0.4
+	min_priority: float = 1
+	
+	# TD3+BC
+	lmbda: float = 0.1
+	
+	# Checkpointing
+	max_eps_when_checkpointing: int = 20
+	steps_before_checkpointing: int = 75e4 
+	reset_weight: float = 0.9
+	
+	# Encoder Model
+	encoder_dim: int = 256
+	enc_hdim: int = 256
+	enc_activ: Callable = F.elu
+	encoder_lr: float = 3e-4
+
+	# Decoder Model
+	decoder_lambda: float = 1.0
+	
+	# Critic Model
+	critic_hdim: int = 256
+	critic_activ: Callable = F.elu
+	critic_lr: float = 3e-4
+	
+	# Actor Model
+	actor_hdim: int = 256
+	actor_activ: Callable = F.relu
+	actor_lr: float = 3e-4
+

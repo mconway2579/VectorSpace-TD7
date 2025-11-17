@@ -156,7 +156,7 @@ if __name__ == "__main__":
 	parser.add_argument("--eval_freq", default=5e3, type=int)
 	parser.add_argument("--eval_eps", default=10, type=int)
 	# parser.add_argument("--max_timesteps", default=5e6, type=int)
-	parser.add_argument("--max_timesteps", default=2e6, type=int)
+	parser.add_argument("--max_timesteps", default=30e3, type=int)
 	# Recording
 	parser.add_argument("--record_videos", default=True, action=argparse.BooleanOptionalAction)
 	parser.add_argument("--record_freq", default=1e5, type=int)
@@ -166,11 +166,11 @@ if __name__ == "__main__":
 	parser.add_argument('--dir_name', default=None)
 	
 	#main(args)
-	for action_space in ["environment"]: #"embedding", 
+	for action_space in ["environment", "embedding"]: 
 		for encoder in ["nflow", "addition", "td7"]:
 			args = parser.parse_args()
-			if action_space == "embedding" and encoder == "td7":
-				continue
+			# if action_space == "embedding" and encoder == "td7":
+			# 	continue
 			args.encoder = encoder
 			args.action_space = action_space
 			if action_space == "environment":
