@@ -27,6 +27,7 @@ class Hyperparameters:
 	discount: float = 0.99
 	target_update_rate: int = 250
 	exploration_noise: float = 0.1
+	gradient_clip: float = 10.0
 	
 	# TD3
 	target_policy_noise: float = 0.2
@@ -50,6 +51,7 @@ class Hyperparameters:
 	enc_hdim: int = 256
 	enc_activ: Callable = F.elu
 	encoder_lr: float = 3e-4
+	log_loss_weight: float = 1.0
 
 	# Decoder Model
 	decoder_lambda: float = 1.0

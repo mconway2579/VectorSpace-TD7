@@ -26,34 +26,32 @@ class TD7Encoder(nn.Module):
 		self.zs3 = nn.Linear(hdim, encoder_dim)
 		
 		# state-action encoder
-		# self.zsa1 = nn.Linear(encoder_dim + action_dim, hdim)
-		self.zsa1 = nn.Linear(2*encoder_dim, hdim)
+		self.zsa1 = nn.Linear(encoder_dim + action_dim, hdim)
+		# self.zsa1 = nn.Linear(2*encoder_dim, hdim)
 		self.zsa2 = nn.Linear(hdim, hdim)
 		self.zsa3 = nn.Linear(hdim, encoder_dim)
 
-		self.za1 = nn.Linear(action_dim, hdim)  # identity mapping
-		self.za2 = nn.Linear(hdim, hdim)  # identity mapping
-		self.za3 = nn.Linear(hdim, encoder_dim)  # identity mapping
+		self.za1 = nn.Linear(action_dim, encoder_dim)
 	
 	def zs(self, state):
 		zs = self.activ(self.zs1(state))
 		zs = self.activ(self.zs2(zs))
 		zs = AvgL1Norm(self.zs3(zs))
+		# zs = self.zs3(zs)
 		return zs
 
-	# def za(self, action):
-	# 	return action
 	def za(self, action):
-		za = self.activ(self.za1(action))
-		za = self.activ(self.za2(za))
-		za = AvgL1Norm(self.za3(za))
-		return za
+		# return self.za1(action)
+		return action
+		
 
 	def zsa(self, zs, za):
 		zsa = self.activ(self.zsa1(torch.cat([zs, za], 1)))
 		zsa = self.activ(self.zsa2(zsa))
+		# zsa = AvgL1Norm(self.zsa3(zsa))
 		zsa = self.zsa3(zsa)
 		return zsa
+	
 	
 class AdditionEncoder(nn.Module):
 	def __init__(self, state_dim, action_dim, encoder_dim=256, hdim=256, activ=F.elu):
@@ -76,16 +74,19 @@ class AdditionEncoder(nn.Module):
 		zs = self.activ(self.zs1(state))
 		zs = self.activ(self.zs2(zs))
 		zs = AvgL1Norm(self.zs3(zs))
+		# zs = self.zs3(zs)
 		return zs
 	
 	def za(self, action):
 		za = self.activ(self.za1(action))
 		za = self.activ(self.za2(za))
-		za = AvgL1Norm(self.za3(za))
+		# za = AvgL1Norm(self.za3(za))
+		za = torch.tanh(self.za3(za))
 		return za
 
 	def zsa(self, zs, za):
 		zsa = AvgL1Norm(zs + za)
+		# zsa = zs + za
 		return zsa
 	
 class NFlowEncoder(nn.Module):
@@ -140,18 +141,21 @@ class NFlowEncoder(nn.Module):
 		zs = self.activ(self.zs1(state))
 		zs = self.activ(self.zs2(zs))
 		zs = AvgL1Norm(self.zs3(zs))
+		# zs = self.zs3(zs)
 		return zs
 	
 	def za(self, action):
 		za = self.activ(self.za1(action))
 		za = self.activ(self.za2(za))
-		za = AvgL1Norm(self.za3(za))
+		# za = AvgL1Norm(self.za3(za))
+		za = torch.tanh(self.za3(za))
 		return za
 	
 	def zsa(self, zs, za):
 		context = torch.cat([zs, za], dim=-1)
 		zsa = self.flow.sample(1, context=context)
 		zsa = zsa.squeeze(1)                            # [B, encoder_dim]
+		zsa = AvgL1Norm(zsa)
 		return zsa
 
 class MLPDecoder(nn.Module):
@@ -169,6 +173,7 @@ class MLPDecoder(nn.Module):
 		a = self.activ(self.a1(za))
 		a = self.activ(self.a2(a))
 		a = self.a3(a)
+		a = torch.tanh(a)
 		return a
 	
 class IdentityDecoder(nn.Module):

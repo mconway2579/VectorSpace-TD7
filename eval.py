@@ -37,7 +37,7 @@ def maybe_plot_loss_histories(loss_histories, t, args):
         plt.ylabel(loss_name)
         plt.title(f'{loss_name} over Training Steps')
         plt.grid()
-        save_path = os.path.join(args.save_dir, f"{loss_name}_history.png")
+        save_path = os.path.join(args.plot_dir, f"{loss_name}_history.png")
         plt.savefig(save_path)
         print(f"Saved {loss_name} history plot to {save_path}")
         plt.close()

@@ -28,6 +28,7 @@ class Actor(nn.Module):
 		a = self.activ(self.l1(a))
 		a = self.activ(self.l2(a))
 		actor_out = torch.tanh(self.l3(a))
+		# actor_out = self.l3(a)
 		return actor_out
 	
 class Critic(nn.Module):
@@ -69,7 +70,20 @@ class Agent(object):
 	def __init__(self, state_dim, action_dim, max_action, args, hp=Hyperparameters()): 
 		# Changing hyperparameters example: hp=Hyperparameters(batch_size=128)
 		self.args = args
-		self.loss_histories = {"encoder_loss": [], "critic_loss": [], "actor_loss": [], "decoder_loss": []}
+		self.loss_histories = {
+			"encoder_reconstruction_loss": [],
+			"encoder_log_loss": [],
+			"encoder_loss": [],
+
+			"decoder_reconstruction_loss": [],
+			"decoder_bc_loss": [],
+			"decoder_loss": [],
+
+			"critic_td_loss": [],
+			"critic_loss": [],
+
+			"actor_loss": [],
+		}
 		self.device = None
 		try:
 			if torch.cuda.is_available():
@@ -98,6 +112,7 @@ class Agent(object):
 		self.fixed_encoder_target = copy.deepcopy(self.encoder)
 		
 		self.action_space_dim = None
+		# self.action_space_dim = action_dim
 		self.decoder = None
 		self.decoder_optimizer = None
 		if args.action_space == "environment":
@@ -105,8 +120,8 @@ class Agent(object):
 			self.decoder = IdentityDecoder().to(self.device)
 			self.decoder_optimizer = DummyOptimizer()
 		elif args.action_space == "embedding":
-			self.action_space_dim = hp.encoder_dim
-			self.decoder = MLPDecoder(action_dim, hp.encoder_dim, hp.enc_hdim, hp.enc_activ).to(self.device)
+			self.action_space_dim = hp.encoder_dim if args.encoder != "td7" else action_dim
+			self.decoder = MLPDecoder(action_dim, self.action_space_dim, hp.enc_hdim, hp.enc_activ).to(self.device)
 			self.decoder_optimizer = torch.optim.Adam(self.decoder.parameters(), lr=hp.encoder_lr)
 
 		self.fixed_decoder = copy.deepcopy(self.decoder)
@@ -167,7 +182,11 @@ class Agent(object):
 			if use_exploration: 
 				actor_out = actor_out + torch.randn_like(actor_out) * self.hp.exploration_noise
 
-			env_action = self.fixed_decoder.decode_action(actor_out)
+			env_action = actor_out
+			if use_checkpoint: 
+				env_action = self.checkpoint_decoder.decode_action(actor_out)
+			else:
+				env_action = self.fixed_decoder.decode_action(actor_out)
 
 			return env_action.clamp(-1,1).cpu().data.numpy().flatten() * self.max_action
 
@@ -178,16 +197,65 @@ class Agent(object):
 		
 		zs = self.encoder.zs(state)
 		za = self.encoder.za(env_action)
+		pred_zs = self.encoder.zsa(zs, za)
+		encoder_loss = None
+		reconstruction_loss = F.mse_loss(pred_zs, next_zs)
+		self.loss_histories["encoder_reconstruction_loss"].append((self.training_steps, float(reconstruction_loss.detach().cpu().item())))
 		if self.args.encoder == "nflow":
 			context = torch.cat([zs, za], dim=-1)
 			log_prob = self.encoder.flow.log_prob(next_zs, context=context)
-			encoder_loss = -log_prob.mean()
+			log_loss = -log_prob.mean()
+			self.loss_histories["encoder_log_loss"].append((self.training_steps, float(log_loss.detach().cpu().item())))
+			encoder_loss = (log_loss * self.hp.log_loss_weight) + reconstruction_loss
 		elif self.args.encoder == "addition" or self.args.encoder == "td7":
-			pred_zs = self.encoder.zsa(zs, za)
-			encoder_loss = F.mse_loss(pred_zs, next_zs)
+			encoder_loss = reconstruction_loss
 		else:
 			raise ValueError(f"[train] Unknown encoder type: {self.args.encoder}")
+		self.loss_histories["encoder_loss"].append((self.training_steps, float(encoder_loss.detach().cpu().item())))
 		return encoder_loss
+	
+	def get_decoder_loss(self, state, env_action):
+		with torch.no_grad():
+			zs = self.fixed_encoder.zs(state)
+			za = self.fixed_encoder.za(env_action)
+			actor_out = self.actor(state, zs)
+
+		pred_action = self.decoder.decode_action(za)
+		reconstruction_loss = F.mse_loss(pred_action, env_action)
+		self.loss_histories["decoder_reconstruction_loss"].append((self.training_steps, float(reconstruction_loss.detach().cpu().item())))
+		
+		a_pred = self.decoder.decode_action(actor_out)
+		bc_loss = F.mse_loss(a_pred, env_action)
+		self.loss_histories["decoder_bc_loss"].append((self.training_steps, float(bc_loss.detach().cpu().item())))
+
+
+		decoder_loss = reconstruction_loss + (self.hp.decoder_lambda * bc_loss)
+		self.loss_histories["decoder_loss"].append((self.training_steps, float(decoder_loss.detach().cpu().item())))
+		return decoder_loss
+	
+	def get_actor_loss(self, state):
+		with torch.no_grad():
+			fixed_zs = self.fixed_encoder.zs(state)
+		actor_out = self.actor(state, fixed_zs)
+		a = self.fixed_decoder.decode_action(actor_out)
+		fixed_za = self.fixed_encoder.za(a)
+		fixed_zsa = self.fixed_encoder.zsa(fixed_zs, fixed_za)
+
+		# with torch.no_grad():
+		# 	action_rep = actor_out
+		# 	fixed_zsa = None
+		# 	if self.args.action_space == "embedding":
+		# 		action_rep = actor_out
+		# 		fixed_zsa = self.fixed_encoder.zsa(fixed_zs, actor_out)
+		# 	elif self.args.action_space == "environment":
+		# 		action_rep = actor_out
+		# 		fixed_za = self.fixed_encoder.za(action_rep)
+		# 		fixed_zsa = self.fixed_encoder.zsa(fixed_zs, fixed_za)
+
+		Q = self.critic(state, actor_out, fixed_zsa, fixed_zs)
+		actor_loss = -Q.mean()
+		self.loss_histories["actor_loss"].append((self.training_steps, float(actor_loss.detach().cpu().item())))
+		return actor_loss
 	
 	def update_lap(self, td_loss):
 		priority = td_loss.max(1)[0].clamp(min=self.hp.min_priority).pow(self.hp.alpha)
@@ -203,22 +271,26 @@ class Agent(object):
 
 			next_actor_out = self.actor_target(next_state, fixed_target_zs) #actor_out at t+1
 			next_action = self.fixed_decoder_target.decode_action(next_actor_out) #env_action at t+1
-
 			
 			noise = (torch.randn_like(next_action) * self.hp.target_policy_noise).clamp(-self.hp.noise_clip, self.hp.noise_clip)
 			next_action = (next_action + noise).clamp(-1,1) #noised action at t+1
+			
 			fixed_target_za = self.fixed_encoder_target.za(next_action) #noised_action at t+1
 			fixed_target_zsa = self.fixed_encoder_target.zsa(fixed_target_zs, fixed_target_za) #zs at t+2
 
 			action_rep = None
-			if self.args.action_space == "embedding":
-				action_rep = fixed_target_za
-			elif self.args.action_space == "environment":
+			if self.args.action_space == "environment":
 				action_rep = next_action
+			elif self.args.action_space == "embedding":
+				action_rep = fixed_target_za
+			
 
-			Q_target = self.critic_target(next_state, action_rep, fixed_target_zsa, fixed_target_zs).min(1,keepdim=True)[0] #q for t+1 to t+2
-			Q_target = reward + not_done * self.hp.discount * Q_target.clamp(self.min_target, self.max_target) #q for t to t+1
-
+			Q_target = self.critic_target(next_state, action_rep, fixed_target_zsa, fixed_target_zs) #q for t+1 to t+2
+			# print(f"{Q_target.shape=}")
+			min_Q_target = Q_target.min(1,keepdim=True)[0]
+			# print(f"{min_Q_target.shape=}")
+			Q_target = reward + not_done * self.hp.discount * min_Q_target.clamp(self.min_target, self.max_target) #q for t to t+1
+			# print(f"{Q_target.shape=}")
 			self.max = max(self.max, float(Q_target.max()))
 			self.min = min(self.min, float(Q_target.min()))
 
@@ -226,51 +298,37 @@ class Agent(object):
 			fixed_za = self.fixed_encoder.za(env_action)
 			fixed_zsa = self.fixed_encoder.zsa(fixed_zs, fixed_za)
 		action_rep = None
+		if self.args.action_space == "environment":
+			action_rep = env_action
 		if self.args.action_space == "embedding":
 			action_rep = fixed_za
-		elif self.args.action_space == "environment":
-			action_rep = env_action
+		
 		Q = self.critic(state, action_rep, fixed_zsa, fixed_zs)
+		# print(f"{Q.shape=}")
 		td_loss = (Q - Q_target).abs()
-		self.update_lap(td_loss)
+		# print(f"{td_loss.shape=}")
+		self.loss_histories["critic_td_loss"].append((self.training_steps, float(td_loss.mean().detach().cpu().item())))
 		critic_loss = LAP_huber(td_loss)
+		self.update_lap(td_loss)
+
+		# print(f"{critic_loss.shape=}")
+		self.loss_histories["critic_loss"].append((self.training_steps, float(critic_loss.detach().cpu().item())))
 		return critic_loss
 	
-	def get_actor_loss(self, state):
-		with torch.no_grad():
-			fixed_zs = self.fixed_encoder.zs(state)
-		actor_out = self.actor(state, fixed_zs)
 
-		with torch.no_grad():
-			action_rep = actor_out
-			fixed_zsa = None
-			if self.args.action_space == "embedding":
-				action_rep = actor_out
-				fixed_zsa = self.fixed_encoder.zsa(fixed_zs, actor_out)
-			elif self.args.action_space == "environment":
-				action_rep = actor_out
-				fixed_za = self.fixed_encoder.za(action_rep)
-				fixed_zsa = self.fixed_encoder.zsa(fixed_zs, fixed_za)
-
-		Q = self.critic(state, actor_out, fixed_zsa, fixed_zs)
-		actor_loss = -Q.mean()
-		return actor_loss
-	
-	def get_decoder_loss(self, state, env_action):
-		with torch.no_grad():
-			zs = self.fixed_encoder.zs(state)
-			za = self.fixed_encoder.za(env_action)
-			actor_out = self.actor(state, zs)
-
-		pred_action = self.decoder.decode_action(za)
-		reconstruction_loss = F.mse_loss(pred_action, env_action)
-		
-		a_pred = self.decoder.decode_action(actor_out)
-		bc_loss = F.mse_loss(a_pred, env_action)
-
-		return reconstruction_loss + (self.hp.decoder_lambda * bc_loss)
-		# return reconstruction_loss
-
+	def soft_update_targets(self):
+		tau = 1/self.hp.target_update_rate
+		target_source = [
+			(self.actor_target, self.actor),
+			(self.critic_target, self.critic),
+			(self.fixed_encoder_target, self.fixed_encoder),
+			(self.fixed_encoder, self.encoder),
+			(self.fixed_decoder_target, self.fixed_decoder),
+			(self.fixed_decoder, self.decoder),
+		]	
+		for target, source in target_source:
+			for target_param, source_param in zip(target.parameters(), source.parameters()):
+				target_param.data.copy_(tau * source_param.data + (1 - tau) * target_param.data)
 
 	def train(self):
 		self.training_steps += 1
@@ -283,9 +341,8 @@ class Agent(object):
 		encoder_loss = self.get_encoder_loss(state, env_action, next_state)
 		self.encoder_optimizer.zero_grad()
 		encoder_loss.backward()
+		# torch.nn.utils.clip_grad_norm_(self.encoder.parameters(), max_norm=self.hp.gradient_clip)
 		self.encoder_optimizer.step()
-		encoder_loss_value = float(encoder_loss.detach().cpu().item())
-		self.loss_histories["encoder_loss"].append((self.training_steps, encoder_loss_value))
 
 		#########################
 		# Update Critic
@@ -293,9 +350,8 @@ class Agent(object):
 		critic_loss = self.get_critic_loss(state, env_action, next_state, reward, not_done)
 		self.critic_optimizer.zero_grad()
 		critic_loss.backward()
+		# torch.nn.utils.clip_grad_norm_(self.critic.parameters(), max_norm=self.hp.gradient_clip)
 		self.critic_optimizer.step()
-		critic_loss_value = float(critic_loss.detach().cpu().item())
-		self.loss_histories["critic_loss"].append((self.training_steps, critic_loss_value))
 		
 
 		#########################
@@ -305,9 +361,8 @@ class Agent(object):
 			actor_loss = self.get_actor_loss(state)
 			self.actor_optimizer.zero_grad()
 			actor_loss.backward()
+			# torch.nn.utils.clip_grad_norm_(self.actor.parameters(), max_norm=self.hp.gradient_clip)
 			self.actor_optimizer.step()
-			actor_loss_value = float(actor_loss.detach().cpu().item())
-			self.loss_histories["actor_loss"].append((self.training_steps, actor_loss_value))
 
 		#########################
 		# Update Decoder
@@ -316,9 +371,8 @@ class Agent(object):
 			decoder_loss = self.get_decoder_loss(state, env_action)
 			self.decoder_optimizer.zero_grad()
 			decoder_loss.backward()
+			# torch.nn.utils.clip_grad_norm_(self.decoder.parameters(), max_norm=self.hp.gradient_clip)
 			self.decoder_optimizer.step()
-			decoder_loss_value = float(decoder_loss.detach().cpu().item())
-			self.loss_histories["decoder_loss"].append((self.training_steps, decoder_loss_value))
 
 
 
@@ -333,10 +387,9 @@ class Agent(object):
 			self.fixed_decoder_target.load_state_dict(self.fixed_decoder.state_dict())
 			self.fixed_decoder.load_state_dict(self.decoder.state_dict())
 			self.replay_buffer.reset_max_priority()
-
 			self.max_target = self.max
 			self.min_target = self.min
-
+		# self.soft_update_targets()
 
 	# If using checkpoints: run when each episode terminates
 	def maybe_train_and_checkpoint(self, ep_timesteps, ep_return):
@@ -354,6 +407,7 @@ class Agent(object):
 			self.best_min_return = self.min_return
 			self.checkpoint_actor.load_state_dict(self.actor.state_dict())
 			self.checkpoint_encoder.load_state_dict(self.fixed_encoder.state_dict())
+			self.checkpoint_decoder.load_state_dict(self.fixed_decoder.state_dict())
 			
 			self.train_and_reset()
 
