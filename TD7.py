@@ -380,16 +380,16 @@ class Agent(object):
 		# Update Iteration
 		#########################
 		if self.training_steps % self.hp.target_update_rate == 0:
-			self.actor_target.load_state_dict(self.actor.state_dict())
-			self.critic_target.load_state_dict(self.critic.state_dict())
-			self.fixed_encoder_target.load_state_dict(self.fixed_encoder.state_dict())
-			self.fixed_encoder.load_state_dict(self.encoder.state_dict())
-			self.fixed_decoder_target.load_state_dict(self.fixed_decoder.state_dict())
-			self.fixed_decoder.load_state_dict(self.decoder.state_dict())
+			# self.actor_target.load_state_dict(self.actor.state_dict())
+			# self.critic_target.load_state_dict(self.critic.state_dict())
+			# self.fixed_encoder_target.load_state_dict(self.fixed_encoder.state_dict())
+			# self.fixed_encoder.load_state_dict(self.encoder.state_dict())
+			# self.fixed_decoder_target.load_state_dict(self.fixed_decoder.state_dict())
+			# self.fixed_decoder.load_state_dict(self.decoder.state_dict())
 			self.replay_buffer.reset_max_priority()
 			self.max_target = self.max
 			self.min_target = self.min
-		# self.soft_update_targets()
+		self.soft_update_targets()
 
 	# If using checkpoints: run when each episode terminates
 	def maybe_train_and_checkpoint(self, ep_timesteps, ep_return):
