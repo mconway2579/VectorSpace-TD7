@@ -59,7 +59,7 @@ def train_online(RL_agent, env, eval_env, args):
 
 			ep_finished = False
 			ep_total_reward, ep_timesteps = 0, 0
-			ep_num += 1 
+			ep_num += 1
 	return evals
 
 
@@ -81,7 +81,17 @@ def maybe_evaluate_and_print(RL_agent, eval_env, evals, t, start_time, args):
 
 		print(f"Average total reward over {args.eval_eps} episodes: {total_reward.mean():.3f}")
 		print("---------------------------------------")
-
+		current_mean = total_reward.mean()
+		best_mean_so_far = 0
+		if len(evals) == 0:
+			best_mean_so_far = -np.inf
+		else:
+			best_mean_so_far = max(np.mean(prev_eval) for prev_eval in evals)
+		
+		if current_mean > best_mean_so_far:
+			save_path = os.path.join(args.model_dir, "best_model.pt")
+			print(f"New best mean reward! {current_mean:.3f} (previous best: {best_mean_so_far:.3f})")
+			RL_agent.save(save_path)
 		evals.append(total_reward)
 		np.save(f"{args.save_dir}/evals.npy", evals)
 		plot_rewards(evals, args)
@@ -93,6 +103,7 @@ def main(args):
 
 	if not os.path.exists("./results"):
 		os.makedirs("./results")
+	
 
 	save_dir = os.path.join("./results", args.dir_name)
 	os.makedirs(save_dir, exist_ok=True)
@@ -105,6 +116,10 @@ def main(args):
 	recording_dir = os.path.join(save_dir, "recordings")
 	os.makedirs(recording_dir, exist_ok=True)
 	args.recording_dir = recording_dir
+
+	model_dir = os.path.join(save_dir, "models")
+	os.makedirs(model_dir, exist_ok=True)
+	args.model_dir = model_dir
 
 	env = gym.make(args.env, render_mode="rgb_array")
 	eval_env = gym.make(args.env, render_mode="rgb_array")
@@ -131,9 +146,14 @@ def main(args):
 	maybe_record_videos(RL_agent, eval_env, 0, args, extension="_final")
 	maybe_plot_loss_histories(RL_agent.loss_histories, np.ceil(args.max_timesteps/args.plot_loss_freq)*args.plot_loss_freq, args)
 
-	model_dir = os.path.join(save_dir, "models")
-	os.makedirs(model_dir, exist_ok=True)
-	print("this is where I would save the models")
+
+	final_model_save_path = os.path.join(args.model_dir, "final_model.pt")
+	print(f"saving final model to {final_model_save_path}")
+	RL_agent.save(final_model_save_path)
+
+	best_model_save_path = os.path.join(args.model_dir, "best_model.pt")
+	tmp_agent = TD7.Agent.load(final_model_save_path)
+	tmp_agent = TD7.Agent.load(best_model_save_path)
 
 	# Close gym envs explicitly
 	env.close()
@@ -151,9 +171,9 @@ if __name__ == "__main__":
 	parser.add_argument("--encoder", type=str, choices=["addition", "td7", "nflow"], default="td7",
 						help="Which encoder to use ('addition', 'td7', or 'nflow').")
 	# RL
-	# parser.add_argument("--env", default="HalfCheetah-v5", type=str)
+	parser.add_argument("--env", default="HalfCheetah-v5", type=str)
 	# parser.add_argument("--env", default="Humanoid-v5", type=str)
-	parser.add_argument("--env", default="Ant-v5", type=str)
+	# parser.add_argument("--env", default="Ant-v5", type=str)
 
 	
 	parser.add_argument("--seed", default=0, type=int)
@@ -166,7 +186,9 @@ if __name__ == "__main__":
 						help="Which space to produce actions in ('environment', or 'embedding').")
 	# Evaluation
 	parser.add_argument("--timesteps_before_training", default=25e3, type=int)
-	parser.add_argument("--eval_freq", default=5e3, type=int)
+	# parser.add_argument("--eval_freq", default=5e3, type=int)
+	parser.add_argument("--eval_freq", default=1e4, type=int)
+
 	parser.add_argument("--eval_eps", default=10, type=int)
 	parser.add_argument("--max_timesteps", default=5e6, type=int)
 	# parser.add_argument("--max_timesteps", default=1e6, type=int)
@@ -176,7 +198,7 @@ if __name__ == "__main__":
 	parser.add_argument("--record_videos", default=True, action=argparse.BooleanOptionalAction)
 	parser.add_argument("--record_freq", default=1e5, type=int)
 	parser.add_argument("--record_eps", default=5, type=int)
-	parser.add_argument("--plot_loss_freq", default=1e4, type=int)
+	parser.add_argument("--plot_loss_freq", default=2e4, type=int)
 	# File
 	parser.add_argument('--dir_name', default=None)
 	
@@ -190,9 +212,9 @@ if __name__ == "__main__":
 			args.encoder = encoder
 			args.action_space = action_space
 			if action_space == "environment":
-				args.dir_name = f"{encoder}_{args.env}_envaction_seed_{args.seed}"
+				args.dir_name = f"{encoder}_{args.env}_envaction_seed_{args.seed}_{int(args.max_timesteps)}"
 			else:
-				args.dir_name = f"{encoder}_{args.env}_embaction_seed_{args.seed}"
+				args.dir_name = f"{encoder}_{args.env}_embaction_seed_{args.seed}_{int(args.max_timesteps)}"
 			main(args)
 			gc.collect()  # Python garbage collection
 			if torch.cuda.is_available():

@@ -69,6 +69,11 @@ class Critic(nn.Module):
 class Agent(object):
 	def __init__(self, state_dim, action_dim, max_action, args, hp=Hyperparameters()): 
 		# Changing hyperparameters example: hp=Hyperparameters(batch_size=128)
+		self.state_dim = state_dim
+		self.action_dim = action_dim
+
+		self.loss_record_freq = 100
+
 		self.args = args
 		self.loss_histories = {
 			"encoder_reconstruction_loss": [],
@@ -195,7 +200,6 @@ class Agent(object):
 
 			return env_action.clamp(-1,1).cpu().data.numpy().flatten() * self.max_action
 
-
 	def get_encoder_loss(self, state, env_action, next_state):
 		with torch.no_grad():
 			next_zs = self.encoder.zs(next_state)
@@ -205,18 +209,21 @@ class Agent(object):
 		pred_zs = self.encoder.zsa(zs, za)
 		encoder_loss = None
 		reconstruction_loss = F.mse_loss(pred_zs, next_zs)
-		self.loss_histories["encoder_reconstruction_loss"].append((self.training_steps, float(reconstruction_loss.detach().cpu().item())))
+		log_loss = None
 		if self.args.encoder == "nflow":
 			context = torch.cat([zs, za], dim=-1)
 			log_prob = self.encoder.flow.log_prob(next_zs, context=context)
 			log_loss = -log_prob.mean()
-			self.loss_histories["encoder_log_loss"].append((self.training_steps, float(log_loss.detach().cpu().item())))
 			encoder_loss = (log_loss * self.hp.log_loss_weight) + reconstruction_loss
 		elif self.args.encoder == "addition" or self.args.encoder == "td7":
 			encoder_loss = reconstruction_loss
 		else:
 			raise ValueError(f"[train] Unknown encoder type: {self.args.encoder}")
-		self.loss_histories["encoder_loss"].append((self.training_steps, float(encoder_loss.detach().cpu().item())))
+		if self.training_steps % self.loss_record_freq == 0:
+			if self.args.encoder == "nflow":
+				self.loss_histories["encoder_log_loss"].append((self.training_steps, float(log_loss.detach().cpu().item())))
+			self.loss_histories["encoder_reconstruction_loss"].append((self.training_steps, float(reconstruction_loss.detach().cpu().item())))
+			self.loss_histories["encoder_loss"].append((self.training_steps, float(encoder_loss.detach().cpu().item())))
 		return encoder_loss
 	
 	def get_decoder_loss(self, state, env_action, next_state):
@@ -233,20 +240,24 @@ class Agent(object):
 
 		pred_action = self.decoder.decode_action(za)
 		reconstruction_loss = F.mse_loss(pred_action, env_action)
-		self.loss_histories["decoder_reconstruction_loss"].append((self.training_steps, float(reconstruction_loss.detach().cpu().item())))
 		
 		a_pred = self.decoder.decode_action(actor_out)
 		bc_loss = F.mse_loss(a_pred, env_action)
-		self.loss_histories["decoder_bc_loss"].append((self.training_steps, float(bc_loss.detach().cpu().item())))			
 
 		# q_decode = self.critic(state, pred_action, zsa, zs)			
 		q_decode = self.critic_target(state, pred_action, zsa, zs)	
 		q_decode = q_decode.min(1, keepdim=True)[0].detach()		
 		q_loss = F.mse_loss(q_decode, q_true)
-		self.loss_histories["decoder_q_loss"].append((self.training_steps, float(q_loss.detach().cpu().item())))
 
 		decoder_loss = reconstruction_loss + (self.hp.decoder_bc_lambda * bc_loss) + (self.hp.decoder_q_lambda * q_loss)
-		self.loss_histories["decoder_loss"].append((self.training_steps, float(decoder_loss.detach().cpu().item())))
+
+		if self.training_steps % self.loss_record_freq == 0:
+			self.loss_histories["decoder_reconstruction_loss"].append((self.training_steps, float(reconstruction_loss.detach().cpu().item())))
+			self.loss_histories["decoder_bc_loss"].append((self.training_steps, float(bc_loss.detach().cpu().item())))			
+			self.loss_histories["decoder_q_loss"].append((self.training_steps, float(q_loss.detach().cpu().item())))
+			self.loss_histories["decoder_loss"].append((self.training_steps, float(decoder_loss.detach().cpu().item())))
+
+
 		return decoder_loss
 	
 	def get_actor_loss(self, state):
@@ -272,7 +283,10 @@ class Agent(object):
 		Q = self.critic(state, a, fixed_zsa, fixed_zs)
 
 		actor_loss = -Q.mean()
-		self.loss_histories["actor_loss"].append((self.training_steps, float(actor_loss.detach().cpu().item())))
+
+		if self.training_steps % self.loss_record_freq == 0:
+			self.loss_histories["actor_loss"].append((self.training_steps, float(actor_loss.detach().cpu().item())))
+
 		return actor_loss
 	
 	def update_lap(self, td_loss):
@@ -325,15 +339,17 @@ class Agent(object):
 		# print(f"{Q.shape=}")
 		td_loss = (Q - Q_target).abs()
 		# print(f"{td_loss.shape=}")
-		self.loss_histories["critic_td_loss"].append((self.training_steps, float(td_loss.mean().detach().cpu().item())))
 		critic_loss = LAP_huber(td_loss)
 		self.update_lap(td_loss)
 
 		# print(f"{critic_loss.shape=}")
-		self.loss_histories["critic_loss"].append((self.training_steps, float(critic_loss.detach().cpu().item())))
+
+		if self.training_steps % self.loss_record_freq == 0:
+			self.loss_histories["critic_td_loss"].append((self.training_steps, float(td_loss.mean().detach().cpu().item())))
+			self.loss_histories["critic_loss"].append((self.training_steps, float(critic_loss.detach().cpu().item())))
+
 		return critic_loss
 	
-
 	def soft_update_targets(self):
 		tau = 1/self.hp.target_update_rate
 		target_source = [
@@ -442,3 +458,151 @@ class Agent(object):
 		self.eps_since_update = 0
 		self.timesteps_since_update = 0
 		self.min_return = 1e8
+
+	def save(self, filepath: str):
+		"""
+		Save all networks, optimizers, checkpoints, and hyperparameters.
+		"""
+		print(f"[Agent.save] Saving checkpoint to {filepath}")
+		checkpoint = {
+			# Reconstruction info
+			"state_dim": self.state_dim,
+			"action_dim": self.action_dim,
+			"max_action": self.max_action,
+			"args": self.args,
+
+			# Hyperparameters (stored as a plain dict for robustness)
+			"hp": dict(vars(self.hp)),
+
+			# Networks
+			"critic": self.critic.state_dict(),
+			"critic_target": self.critic_target.state_dict(),
+
+			"encoder": self.encoder.state_dict(),
+			"fixed_encoder": self.fixed_encoder.state_dict(),
+			"fixed_encoder_target": self.fixed_encoder_target.state_dict(),
+
+			"decoder": None if self.decoder is None else self.decoder.state_dict(),
+			"fixed_decoder": None if self.fixed_decoder is None else self.fixed_decoder.state_dict(),
+			"fixed_decoder_target": None if self.fixed_decoder_target is None else self.fixed_decoder_target.state_dict(),
+
+			"actor": self.actor.state_dict(),
+			"actor_target": self.actor_target.state_dict(),
+
+			"checkpoint_actor": self.checkpoint_actor.state_dict(),
+			"checkpoint_encoder": self.checkpoint_encoder.state_dict(),
+			"checkpoint_decoder": self.checkpoint_decoder.state_dict(),
+
+			# Optimizers
+			"critic_optimizer": self.critic_optimizer.state_dict(),
+			"encoder_optimizer": self.encoder_optimizer.state_dict(),
+			"decoder_optimizer": (
+				None
+				if self.decoder_optimizer is None or isinstance(self.decoder_optimizer, DummyOptimizer)
+				else self.decoder_optimizer.state_dict()
+			),
+			"actor_optimizer": self.actor_optimizer.state_dict(),
+
+			# Training state (optional but useful)
+			"training_steps": self.training_steps,
+			"eps_since_update": self.eps_since_update,
+			"timesteps_since_update": self.timesteps_since_update,
+			"max_eps_before_update": self.max_eps_before_update,
+			"min_return": self.min_return,
+			"best_min_return": self.best_min_return,
+			"max": self.max,
+			"min": self.min,
+			"max_target": self.max_target,
+			"min_target": self.min_target,
+		}
+
+		torch.save(checkpoint, filepath)
+		print(f"[Agent.save] Saved checkpoint to {filepath}")
+
+	@classmethod
+	def load(cls, filepath: str, args_override=None, hp_override: Hyperparameters | None = None):
+		"""
+		Load an Agent from a checkpoint.
+		Re-instantiates the networks/optimizers/targets and restores their state.
+		
+		- args_override: if provided, overrides args stored in the checkpoint.
+		- hp_override: if provided, overrides hyperparameters stored in the checkpoint.
+		"""
+		checkpoint = torch.load(filepath, map_location="cpu",  weights_only=False)
+
+		# Restore / construct hyperparameters
+		hp_dict = checkpoint["hp"]
+		if hp_override is not None:
+			hp = hp_override
+		else:
+			hp = Hyperparameters(**hp_dict)
+
+		# Restore / construct args
+		if args_override is not None:
+			args = args_override
+		else:
+			args = checkpoint["args"]
+
+		state_dim = checkpoint["state_dim"]
+		action_dim = checkpoint["action_dim"]
+		max_action = checkpoint["max_action"]
+
+		# Instantiate a fresh Agent (this builds all modules & optimizers)
+		agent = cls(
+			state_dim=state_dim,
+			action_dim=action_dim,
+			max_action=max_action,
+			args=args,
+			hp=hp,
+		)
+
+		# Networks
+		agent.critic.load_state_dict(checkpoint["critic"])
+		agent.critic_target.load_state_dict(checkpoint["critic_target"])
+
+		agent.encoder.load_state_dict(checkpoint["encoder"])
+		agent.fixed_encoder.load_state_dict(checkpoint["fixed_encoder"])
+		agent.fixed_encoder_target.load_state_dict(checkpoint["fixed_encoder_target"])
+
+		if checkpoint["decoder"] is not None and agent.decoder is not None:
+			agent.decoder.load_state_dict(checkpoint["decoder"])
+		if checkpoint["fixed_decoder"] is not None and agent.fixed_decoder is not None:
+			agent.fixed_decoder.load_state_dict(checkpoint["fixed_decoder"])
+		if checkpoint["fixed_decoder_target"] is not None and agent.fixed_decoder_target is not None:
+			agent.fixed_decoder_target.load_state_dict(checkpoint["fixed_decoder_target"])
+
+		agent.actor.load_state_dict(checkpoint["actor"])
+		agent.actor_target.load_state_dict(checkpoint["actor_target"])
+
+		agent.checkpoint_actor.load_state_dict(checkpoint["checkpoint_actor"])
+		agent.checkpoint_encoder.load_state_dict(checkpoint["checkpoint_encoder"])
+		if agent.checkpoint_decoder is not None and checkpoint["checkpoint_decoder"] is not None:
+			agent.checkpoint_decoder.load_state_dict(checkpoint["checkpoint_decoder"])
+
+		# Optimizers
+		agent.critic_optimizer.load_state_dict(checkpoint["critic_optimizer"])
+		agent.encoder_optimizer.load_state_dict(checkpoint["encoder_optimizer"])
+
+		if (
+			checkpoint["decoder_optimizer"] is not None
+			and agent.decoder_optimizer is not None
+			and not isinstance(agent.decoder_optimizer, DummyOptimizer)
+		):
+			agent.decoder_optimizer.load_state_dict(checkpoint["decoder_optimizer"])
+
+		agent.actor_optimizer.load_state_dict(checkpoint["actor_optimizer"])
+
+		# Training state (if present)
+		agent.training_steps = checkpoint.get("training_steps", 0)
+		agent.eps_since_update = checkpoint.get("eps_since_update", 0)
+		agent.timesteps_since_update = checkpoint.get("timesteps_since_update", 0)
+		agent.max_eps_before_update = checkpoint.get("max_eps_before_update", agent.max_eps_before_update)
+		agent.min_return = checkpoint.get("min_return", agent.min_return)
+		agent.best_min_return = checkpoint.get("best_min_return", agent.best_min_return)
+		agent.max = checkpoint.get("max", agent.max)
+		agent.min = checkpoint.get("min", agent.min)
+		agent.max_target = checkpoint.get("max_target", agent.max_target)
+		agent.min_target = checkpoint.get("min_target", agent.min_target)
+
+		print(f"[Agent.load] Loaded checkpoint from {filepath}")
+		return agent
