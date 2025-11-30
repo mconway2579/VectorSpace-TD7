@@ -41,12 +41,14 @@ def train_online(RL_agent, env, eval_env, args):
 		state = next_state
 
 		if allow_train and not args.use_checkpoints:
+			# print("training from train")
 			RL_agent.train()
 
 		if ep_finished: 
 			print(f"Total T: {t+1}/{int(args.max_timesteps)} Episode Num: {ep_num} Episode T: {ep_timesteps} Reward: {ep_total_reward:.3f} {terminated=}, {truncated=}")
 
 			if allow_train and args.use_checkpoints:
+				# print("training from checkpoint")
 				RL_agent.maybe_train_and_checkpoint(ep_timesteps, ep_total_reward)
 
 			if t >= args.timesteps_before_training:
@@ -149,9 +151,15 @@ if __name__ == "__main__":
 	parser.add_argument("--encoder", type=str, choices=["addition", "td7", "nflow"], default="td7",
 						help="Which encoder to use ('addition', 'td7', or 'nflow').")
 	# RL
-	parser.add_argument("--env", default="HalfCheetah-v5", type=str)
+	# parser.add_argument("--env", default="HalfCheetah-v5", type=str)
+	# parser.add_argument("--env", default="Humanoid-v5", type=str)
+	parser.add_argument("--env", default="Ant-v5", type=str)
+
+	
 	parser.add_argument("--seed", default=0, type=int)
+	# parser.add_argument('--use_checkpoints', default=False, action=argparse.BooleanOptionalAction)
 	parser.add_argument('--use_checkpoints', default=True, action=argparse.BooleanOptionalAction)
+
 
 	#Action Behavior
 	parser.add_argument("--action_space", type=str, choices=["environment", "embedding"], default="environment",
@@ -160,8 +168,8 @@ if __name__ == "__main__":
 	parser.add_argument("--timesteps_before_training", default=25e3, type=int)
 	parser.add_argument("--eval_freq", default=5e3, type=int)
 	parser.add_argument("--eval_eps", default=10, type=int)
-	# parser.add_argument("--max_timesteps", default=5e6, type=int)
-	parser.add_argument("--max_timesteps", default=1e6, type=int)
+	parser.add_argument("--max_timesteps", default=5e6, type=int)
+	# parser.add_argument("--max_timesteps", default=1e6, type=int)
 	# parser.add_argument("--max_timesteps", default=4e4, type=int)
 
 	# Recording
@@ -173,7 +181,8 @@ if __name__ == "__main__":
 	parser.add_argument('--dir_name', default=None)
 	
 	#main(args)
-	for action_space in ["environment", "embedding"]:
+	# for action_space in ["embedding", "environment"]:
+	for action_space in ["environment"]:
 		for encoder in ["td7", "nflow", "addition"]:
 			args = parser.parse_args()
 			# if action_space == "embedding" and encoder == "td7":

@@ -1,8 +1,11 @@
 
 from nflows.flows.base import Flow
 from nflows.distributions.normal import ConditionalDiagonalNormal, StandardNormal
-from nflows.transforms.base import CompositeTransform
+from nflows.transforms import CompositeTransform, ReversePermutation
 from nflows.transforms.coupling import AffineCouplingTransform
+from nflows.transforms.lu import LULinear
+from nflows.transforms.nonlinearities import LeakyReLU
+
 
 from nflows.transforms.autoregressive import MaskedAffineAutoregressiveTransform
 from nflows.nn.nets import ResidualNet
@@ -105,37 +108,27 @@ class NFlowEncoder(nn.Module):
 		self.za2 = nn.Linear(hdim, hdim)
 		self.za3 = nn.Linear(hdim, encoder_dim)
 
-		# ---- flow for z* | (zs, za) ----
-		flow_features = encoder_dim            # dim of the random variable (*)
-		context_dim = 2 * encoder_dim          # dim of [zs, za]
+        # ---- flow for z* | (zs, za) ----
+		context_dim = 2 * encoder_dim
 
-		# simple 0/1 mask: half of dims transformed, half passthrough
-		mask = torch.zeros(flow_features)
-		mask[::2] = 1.0
-		self.register_buffer("mask", mask)
+		# register the context encoder as a submodule
+		self.context_encoder = nn.Linear(context_dim, encoder_dim * 2)
 
-		def make_transform_net(in_features, out_features):
-			# small residual net: cheap but expressive enough
-			return ResidualNet(
-				in_features=in_features,
-				out_features=out_features,
-				hidden_features=hdim,     # keep this modest
-				num_blocks=1,
-				context_features=context_dim,
-				activation=F.elu,
-				dropout_probability=0.0,
-				use_batch_norm=False,
-			)
-
-		coupling = AffineCouplingTransform(
-			mask=self.mask,
-			transform_net_create_fn=make_transform_net,
+		self.base_dist = ConditionalDiagonalNormal(
+			shape=[encoder_dim],
+			context_encoder=self.context_encoder,
 		)
 
-		transform = CompositeTransform([coupling])  # exactly one transform
-		base_dist = StandardNormal(shape=[flow_features])
+		# num_blocks = 3
+		# blocks = []
+		# for _ in range(num_blocks):
+		# 	blocks.append(LULinear(features=encoder_dim))
+		# 	blocks.append(LeakyReLU())
+		blocks = []
 
-		self.flow = Flow(transform, base_dist)
+		self.transform = CompositeTransform(blocks)
+		self.flow = Flow(self.transform, self.base_dist)
+
 
 	def zs(self, state):
 		zs = self.activ(self.zs1(state))

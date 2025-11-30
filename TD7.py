@@ -77,6 +77,7 @@ class Agent(object):
 
 			"decoder_reconstruction_loss": [],
 			"decoder_bc_loss": [],
+			"decoder_q_loss": [],
 			"decoder_loss": [],
 
 			"critic_td_loss": [],
@@ -96,6 +97,10 @@ class Agent(object):
 			self.device = torch.device("cpu")
 		print(f"Using device: {self.device}")
 		self.hp = hp
+
+		self.critic = Critic(state_dim, action_dim, hp.encoder_dim, hp.critic_hdim, hp.critic_activ).to(self.device)
+		self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=hp.critic_lr)
+		self.critic_target = copy.deepcopy(self.critic)
 
 		self.encoder = None
 		if args.encoder == "addition":
@@ -131,9 +136,9 @@ class Agent(object):
 		self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=hp.actor_lr)
 		self.actor_target = copy.deepcopy(self.actor)
 
-		self.critic = Critic(state_dim, self.action_space_dim, hp.encoder_dim, hp.critic_hdim, hp.critic_activ).to(self.device)
-		self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=hp.critic_lr)
-		self.critic_target = copy.deepcopy(self.critic)
+		# self.critic = Critic(state_dim, self.action_space_dim, hp.encoder_dim, hp.critic_hdim, hp.critic_activ).to(self.device)
+		# self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=hp.critic_lr)
+		# self.critic_target = copy.deepcopy(self.critic)
 
 		self.checkpoint_actor = copy.deepcopy(self.actor)
 		self.checkpoint_encoder = copy.deepcopy(self.encoder)
@@ -214,11 +219,17 @@ class Agent(object):
 		self.loss_histories["encoder_loss"].append((self.training_steps, float(encoder_loss.detach().cpu().item())))
 		return encoder_loss
 	
-	def get_decoder_loss(self, state, env_action):
+	def get_decoder_loss(self, state, env_action, next_state):
 		with torch.no_grad():
 			zs = self.fixed_encoder.zs(state)
 			za = self.fixed_encoder.za(env_action)
-			actor_out = self.actor(state, zs)
+			# actor_out = self.actor(state, zs).detach()
+			actor_out = self.actor_target(state, zs).detach()
+			zsa = self.fixed_encoder.zsa(zs, za)
+			# q_true = self.critic(state, env_action, zsa, zs)
+			q_true = self.critic_target(state, env_action, zsa, zs)
+			q_true = q_true.min(1, keepdim=True)[0].detach()
+
 
 		pred_action = self.decoder.decode_action(za)
 		reconstruction_loss = F.mse_loss(pred_action, env_action)
@@ -226,10 +237,15 @@ class Agent(object):
 		
 		a_pred = self.decoder.decode_action(actor_out)
 		bc_loss = F.mse_loss(a_pred, env_action)
-		self.loss_histories["decoder_bc_loss"].append((self.training_steps, float(bc_loss.detach().cpu().item())))
+		self.loss_histories["decoder_bc_loss"].append((self.training_steps, float(bc_loss.detach().cpu().item())))			
 
+		# q_decode = self.critic(state, pred_action, zsa, zs)			
+		q_decode = self.critic_target(state, pred_action, zsa, zs)	
+		q_decode = q_decode.min(1, keepdim=True)[0].detach()		
+		q_loss = F.mse_loss(q_decode, q_true)
+		self.loss_histories["decoder_q_loss"].append((self.training_steps, float(q_loss.detach().cpu().item())))
 
-		decoder_loss = reconstruction_loss + (self.hp.decoder_lambda * bc_loss)
+		decoder_loss = reconstruction_loss + (self.hp.decoder_bc_lambda * bc_loss) + (self.hp.decoder_q_lambda * q_loss)
 		self.loss_histories["decoder_loss"].append((self.training_steps, float(decoder_loss.detach().cpu().item())))
 		return decoder_loss
 	
@@ -252,7 +268,9 @@ class Agent(object):
 		# 		fixed_za = self.fixed_encoder.za(action_rep)
 		# 		fixed_zsa = self.fixed_encoder.zsa(fixed_zs, fixed_za)
 
-		Q = self.critic(state, actor_out, fixed_zsa, fixed_zs)
+		# Q = self.critic(state, actor_out, fixed_zsa, fixed_zs)
+		Q = self.critic(state, a, fixed_zsa, fixed_zs)
+
 		actor_loss = -Q.mean()
 		self.loss_histories["actor_loss"].append((self.training_steps, float(actor_loss.detach().cpu().item())))
 		return actor_loss
@@ -278,12 +296,12 @@ class Agent(object):
 			fixed_target_za = self.fixed_encoder_target.za(next_action) #noised_action at t+1
 			fixed_target_zsa = self.fixed_encoder_target.zsa(fixed_target_zs, fixed_target_za) #zs at t+2
 
-			action_rep = None
-			if self.args.action_space == "environment":
-				action_rep = next_action
-			elif self.args.action_space == "embedding":
-				action_rep = fixed_target_za
-			
+			# action_rep = None
+			# if self.args.action_space == "environment":
+			# 	action_rep = next_action
+			# elif self.args.action_space == "embedding":
+			# 	action_rep = fixed_target_za
+			action_rep = next_action
 
 			Q_target = self.critic_target(next_state, action_rep, fixed_target_zsa, fixed_target_zs) #q for t+1 to t+2
 			# print(f"{Q_target.shape=}")
@@ -297,12 +315,12 @@ class Agent(object):
 			fixed_zs = self.fixed_encoder.zs(state)
 			fixed_za = self.fixed_encoder.za(env_action)
 			fixed_zsa = self.fixed_encoder.zsa(fixed_zs, fixed_za)
-		action_rep = None
-		if self.args.action_space == "environment":
-			action_rep = env_action
-		if self.args.action_space == "embedding":
-			action_rep = fixed_za
-		
+		# action_rep = None
+		# if self.args.action_space == "environment":
+		# 	action_rep = env_action
+		# if self.args.action_space == "embedding":
+		# 	action_rep = fixed_za
+		action_rep = env_action
 		Q = self.critic(state, action_rep, fixed_zsa, fixed_zs)
 		# print(f"{Q.shape=}")
 		td_loss = (Q - Q_target).abs()
@@ -368,7 +386,7 @@ class Agent(object):
 		# Update Decoder
 		#########################
 		if not isinstance(self.decoder, IdentityDecoder):
-			decoder_loss = self.get_decoder_loss(state, env_action)
+			decoder_loss = self.get_decoder_loss(state, env_action, next_state)
 			self.decoder_optimizer.zero_grad()
 			decoder_loss.backward()
 			# torch.nn.utils.clip_grad_norm_(self.decoder.parameters(), max_norm=self.hp.gradient_clip)

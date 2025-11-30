@@ -54,8 +54,9 @@ class Hyperparameters:
 	log_loss_weight: float = 1.0
 
 	# Decoder Model
-	decoder_lambda: float = 1.0
-	
+	decoder_bc_lambda: float = 1.0
+	decoder_q_lambda: float = 1.0
+
 	# Critic Model
 	critic_hdim: int = 256
 	critic_activ: Callable = F.elu
