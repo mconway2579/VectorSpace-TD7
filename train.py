@@ -183,50 +183,56 @@ if __name__ == "__main__":
 						help="Which encoder to use ('addition', 'td7', or 'nflow').")
 	# RL
 	parser.add_argument("--env", default="HalfCheetah-v5", type=str)
-	# parser.add_argument("--env", default="Humanoid-v5", type=str)
-	# parser.add_argument("--env", default="Ant-v5", type=str)
+	parser.add_argument("--deterministic_actor", default=True, action=argparse.BooleanOptionalAction)
 
 	
 	parser.add_argument("--seed", default=0, type=int)
-	# parser.add_argument('--use_checkpoints', default=False, action=argparse.BooleanOptionalAction)
 	parser.add_argument('--use_checkpoints', default=True, action=argparse.BooleanOptionalAction)
 	
 	# Evaluation
 	parser.add_argument("--timesteps_before_training", default=25e3, type=int)
 	parser.add_argument("--eval_freq", default=5e3, type=int)
-	# parser.add_argument("--eval_freq", default=1e4, type=int)
 
 	parser.add_argument("--eval_eps", default=10, type=int)
 	# parser.add_argument("--max_timesteps", default=5e6, type=int)
-	parser.add_argument("--max_timesteps", default=1e6, type=int)
-	# parser.add_argument("--max_timesteps", default=4e4, type=int)
+	# parser.add_argument("--max_timesteps", default=1e6, type=int)
+	parser.add_argument("--max_timesteps", default=100_000, type=int)
+	# parser.add_argument("--max_timesteps", default=(35e3 + 1), type=int)
 
 	# Recording
 	parser.add_argument("--record_videos", default=True, action=argparse.BooleanOptionalAction)
-	parser.add_argument("--record_freq", default=1e5, type=int)
+	parser.add_argument("--record_freq", default=None, type=int)
 	parser.add_argument("--record_eps", default=5, type=int)
-	# parser.add_argument("--plot_loss_freq", default=2e4, type=int)
-	# parser.add_argument("--plot_loss_freq", default=1e6, type=int)
 
 	# File
 	parser.add_argument('--dir_name', default=None)
 	parser.add_argument("--writer_flush_seconds", default=1, type=int)
+
+	def apply_dynamic_defaults(args):
+		if args.record_freq is None:
+			args.record_freq = args.max_timesteps // 10
+		return args
 	
 	#main(args)
-	for env in ["HalfCheetah-v5", "Ant-v5"]: #, , "Humanoid-v5", "Hopper-v5"]:["Humanoid-v5"]:#
-		for encoder in ["nflow",  "td7", "addition"]:
-			args = parser.parse_args()
-			args.env = env
-			args.encoder = encoder
-			args.dir_name = f"{encoder}_{args.env}_envaction_seed_{args.seed}_{int(args.max_timesteps)}"
-			
-			main(args)
-			gc.collect()  # Python garbage collection
-			if torch.cuda.is_available():
-				torch.cuda.empty_cache()
-				torch.cuda.ipc_collect()
-			# For MPS (Apple Silicon) if you ever use it:
-			if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-				torch.mps.empty_cache()
+	for env in ["HalfCheetah-v5"]:#, "Ant-v5"]: #, , "Humanoid-v5", "Hopper-v5"]:["Humanoid-v5"]:#
+		for deterministic_actor in [False, True]:
+			for encoder in ["nflow",  "td7"]:#, "addition"]:
+				args = parser.parse_args()
+				args = apply_dynamic_defaults(args)
+
+				args.env = env
+				args.encoder = encoder
+				args.deterministic_actor = deterministic_actor
+				actor_str = f"DeterministicActor" if args.deterministic_actor else "ProbabilisticActor"
+				args.dir_name = f"{encoder}_{args.env}_{actor_str}_seed_{args.seed}_{int(args.max_timesteps)}"
+				
+				main(args)
+				gc.collect()  # Python garbage collection
+				if torch.cuda.is_available():
+					torch.cuda.empty_cache()
+					torch.cuda.ipc_collect()
+				# For MPS (Apple Silicon) if you ever use it:
+				if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+					torch.mps.empty_cache()
 
 	
