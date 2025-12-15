@@ -133,7 +133,7 @@ class Agent(object):
 		self.action_dim = action_dim
 		self.writer = writer
 
-		self.loss_record_freq = 10
+		self.loss_record_freq = 100
 
 		self.args = args
 		self.device = None
@@ -146,6 +146,7 @@ class Agent(object):
 				self.device = torch.device("cpu")
 		except Exception:
 			self.device = torch.device("cpu")
+		
 		print(f"Using device: {self.device}")
 		self.hp = hp
 

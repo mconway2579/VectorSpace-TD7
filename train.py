@@ -133,6 +133,8 @@ def main(args):
 
 	env = gym.make(args.env, render_mode="rgb_array")
 	eval_env = gym.make(args.env, render_mode="rgb_array")
+	# env = gym.make_vec(args.env, num_envs=8, vectorization_mode="async", render_mode="rgb_array")
+	# eval_env = gym.make_vec(args.env, num_envs=args.eval_eps, vectorization_mode="sync", render_mode="rgb_array")
 
 	print("---------------------------------------")
 	print(f"Algorithm: TD7, Env: {args.env}, Seed: {args.seed}")
@@ -194,10 +196,10 @@ if __name__ == "__main__":
 	parser.add_argument("--eval_freq", default=5e3, type=int)
 
 	parser.add_argument("--eval_eps", default=10, type=int)
-	# parser.add_argument("--max_timesteps", default=5e6, type=int)
-	# parser.add_argument("--max_timesteps", default=1e6, type=int)
-	parser.add_argument("--max_timesteps", default=100_000, type=int)
-	# parser.add_argument("--max_timesteps", default=(35e3 + 1), type=int)
+	# parser.add_argument("--max_timesteps", default=5_000_000, type=int)
+	parser.add_argument("--max_timesteps", default=1_000_000, type=int)
+	# parser.add_argument("--max_timesteps", default=100_000, type=int)
+	# parser.add_argument("--max_timesteps", default=35_000, type=int)
 
 	# Recording
 	parser.add_argument("--record_videos", default=True, action=argparse.BooleanOptionalAction)
@@ -206,7 +208,7 @@ if __name__ == "__main__":
 
 	# File
 	parser.add_argument('--dir_name', default=None)
-	parser.add_argument("--writer_flush_seconds", default=1, type=int)
+	parser.add_argument("--writer_flush_seconds", default=30, type=int)
 
 	def apply_dynamic_defaults(args):
 		if args.record_freq is None:
@@ -214,7 +216,7 @@ if __name__ == "__main__":
 		return args
 	
 	#main(args)
-	for env in ["HalfCheetah-v5"]:#, "Ant-v5"]: #, , "Humanoid-v5", "Hopper-v5"]:["Humanoid-v5"]:#
+	for env in ["Ant-v5", "Hopper-v5"]:#["HalfCheetah-v5"]:#,  #, , "Humanoid-v5", ]:["Humanoid-v5"]:#
 		for deterministic_actor in [False, True]:
 			for encoder in ["nflow",  "td7"]:#, "addition"]:
 				args = parser.parse_args()

@@ -3,7 +3,8 @@ import torch
 from TD7 import Agent
 import argparse
 import gymnasium as gym
-
+import os
+import time
 # https://arxiv.org/pdf/1405.5498
 # Double Progressive Widening implementation
 
@@ -229,7 +230,10 @@ class DoubleProgressiveWidening:
 
         Returns:
             best_action: The best action to take from root (numpy array)
+            search_time: Time taken for tree search in seconds
         """
+        start_time = time.time()
+
         # Convert root state to embedding
         with torch.no_grad():
             if isinstance(root_state, np.ndarray):
@@ -305,14 +309,16 @@ class DoubleProgressiveWidening:
         # Select best action from root based on visit count (robust child)
         if not root.action_samples:
             # Fallback: sample action without noise
-            return self.sample_action(root_zs, add_noise=False).cpu().numpy()
+            search_time = time.time() - start_time
+            return self.sample_action(root_zs, add_noise=False).cpu().numpy(), search_time
 
         # Choose most visited action (robust child - standard MCTS)
         best_idx = max(root.children.keys(),
                       key=lambda idx: root.children[idx].visits)
         best_action = root.action_samples[best_idx]
 
-        return best_action.cpu().numpy()
+        search_time = time.time() - start_time
+        return best_action.cpu().numpy(), search_time
 
     def get_statistics(self, root):
         """
@@ -359,8 +365,12 @@ class ActorWrapper:
 
         Returns:
             action: Selected action (numpy array)
+            inference_time: Time taken for action selection in seconds
         """
-        return self.agent.select_action(state, use_checkpoint=False, use_exploration=False)
+        start_time = time.time()
+        action = self.agent.select_action(state, use_checkpoint=False, use_exploration=False)
+        inference_time = time.time() - start_time
+        return action, inference_time
 
 
 def eval_method(action_model, env, args):
@@ -373,19 +383,22 @@ def eval_method(action_model, env, args):
         args: Arguments object with num_episodes, render
 
     Returns:
-        dict: Results with mean, std, min, max, raw episode rewards
+        dict: Results with mean, std, min, max, raw episode rewards, and timing info
     """
     episode_rewards = []
+    all_action_times = []
 
     for ep in range(args.num_episodes):
         state, _ = env.reset()
         done = False
         episode_reward = 0
         step = 0
+        episode_action_times = []
 
         while not done:
-            # Select action using the provided model
-            action = action_model.select_action(state)
+            # Select action using the provided model (returns action and time)
+            action, action_time = action_model.select_action(state)
+            episode_action_times.append(action_time)
 
             # Take action in environment
             state, reward, terminated, truncated, _ = env.step(action)
@@ -397,15 +410,25 @@ def eval_method(action_model, env, args):
                 env.render()
 
         episode_rewards.append(episode_reward)
-        print(f"Episode {ep+1}/{args.num_episodes}: Reward = {episode_reward:.2f}, Steps = {step}")
+        all_action_times.extend(episode_action_times)
+
+        avg_time = np.mean(episode_action_times)
+        total_time = np.sum(episode_action_times)
+        print(f"Episode {ep+1}/{args.num_episodes}: Reward = {episode_reward:.2f}, Steps = {step}, "
+              f"Avg time/action = {avg_time*1000:.2f}ms, Total time = {total_time:.2f}s")
 
     results = {
         "mean": np.mean(episode_rewards),
         "std": np.std(episode_rewards),
         "min": np.min(episode_rewards),
         "max": np.max(episode_rewards),
-        "raw": episode_rewards
+        "raw": episode_rewards,
+        "time_mean": np.mean(all_action_times),
+        "time_std": np.std(all_action_times),
+        "time_min": np.min(all_action_times),
+        "time_max": np.max(all_action_times),
     }
+
     print("\n")
     print("="*60)
     print("Results")
@@ -414,6 +437,10 @@ def eval_method(action_model, env, args):
     print(f"Std reward: {results['std']:.2f}")
     print(f"Min reward: {results['min']:.2f}")
     print(f"Max reward: {results['max']:.2f}")
+    print(f"Mean time/action: {results['time_mean']*1000:.2f}ms")
+    print(f"Std time/action: {results['time_std']*1000:.2f}ms")
+    print(f"Min time/action: {results['time_min']*1000:.2f}ms")
+    print(f"Max time/action: {results['time_max']*1000:.2f}ms")
     print("="*60)
     return results
 
@@ -422,16 +449,18 @@ def eval_method(action_model, env, args):
 if __name__ == "__main__":
     # Parse arguments
     parser = argparse.ArgumentParser()
+    results_subdirs = os.listdir("./results/")
+    print(f"{results_subdirs=}")
+    models = []
+    for d in results_subdirs:
+        model_path = os.path.join("./results/", d, "models", "final_model.pt")
+        if os.path.isfile(model_path):
+            models.append(model_path)
     parser.add_argument("--model_paths", type=str, nargs='+',
-                       default=[
-                           "/home/max/VectorSpace-TD7/results/nflow_HalfCheetah-v5_DeterministicActor_seed_0_1000000/models/final_model.pt",
-                           "/home/max/VectorSpace-TD7/results/nflow_HalfCheetah-v5_ProbabilisticActor_seed_0_1000000/models/final_model.pt",
-                           "/home/max/VectorSpace-TD7/results/td7_HalfCheetah-v5_DeterministicActor_seed_0_1000000/models/final_model.pt",
-                           "/home/max/VectorSpace-TD7/results/td7_HalfCheetah-v5_ProbabilisticActor_seed_0_1000000/models/final_model.pt"
-                       ],
+                       default=models,
                        help="List of paths to trained models")
-    parser.add_argument("--env", type=str, default="HalfCheetah-v5",
-                       help="Environment name")
+    # parser.add_argument("--env", type=str, default="HalfCheetah-v5",
+    #                    help="Environment name")
     parser.add_argument("--num_simulations", type=int, default=20,
                        help="Number of MCTS simulations per action (aggressive default: 20)")
     parser.add_argument("--num_episodes", type=int, default=5,
@@ -452,18 +481,21 @@ if __name__ == "__main__":
 
     # Create environment once
     render_mode = "human" if args.render else "rgb_array"
-    env = gym.make(args.env, render_mode=render_mode)
+    
 
     # Store all results
     all_results = []
 
     # Loop over all model paths
     for model_idx, model_path in enumerate(args.model_paths):
+        env_str = model_path.split("/")[-3].split("_")[1]
+        print(f"Detected environment from model path: {env_str}")
+        env = gym.make(env_str, render_mode=render_mode)
         print("\n" + "="*80)
         print(f"EVALUATING MODEL {model_idx + 1}/{len(args.model_paths)}")
         print("="*80)
         print(f"Model: {model_path}")
-        print(f"Environment: {args.env}")
+        print(f"Environment: {env_str}")
         print(f"Simulations per action: {args.num_simulations}")
         print(f"Episodes: {args.num_episodes}")
         print(f"Parameters: alpha_a={args.alpha_a}, alpha_s={args.alpha_s}, k_a={args.k_a}, k_s={args.k_s}, c={args.c_param}")
@@ -512,6 +544,9 @@ if __name__ == "__main__":
         print("="*60)
         improvement = ts_results["mean"] - bs_results["mean"]
         print(f"Mean reward improvement: {improvement:+.2f} ({improvement/bs_results['mean']*100:+.2f}%)")
+
+        time_overhead = ts_results["time_mean"] / bs_results["time_mean"]
+        print(f"Time overhead: {time_overhead:.2f}x ({ts_results['time_mean']*1000:.2f}ms vs {bs_results['time_mean']*1000:.2f}ms)")
         print("="*60)
 
         # Store results
@@ -520,7 +555,8 @@ if __name__ == "__main__":
             "tree_search": ts_results,
             "baseline": bs_results,
             "improvement": improvement,
-            "improvement_pct": (improvement / bs_results['mean'] * 100)
+            "improvement_pct": (improvement / bs_results['mean'] * 100),
+            "time_overhead": time_overhead
         })
 
     env.close()
@@ -535,4 +571,6 @@ if __name__ == "__main__":
         print(f"  Tree Search: {result['tree_search']['mean']:.2f} ± {result['tree_search']['std']:.2f}")
         print(f"  Baseline:    {result['baseline']['mean']:.2f} ± {result['baseline']['std']:.2f}")
         print(f"  Improvement: {result['improvement']:+.2f} ({result['improvement_pct']:+.2f}%)")
+        print(f"  Time overhead: {result['time_overhead']:.2f}x "
+              f"({result['tree_search']['time_mean']*1000:.2f}ms vs {result['baseline']['time_mean']*1000:.2f}ms)")
     print("="*80)
