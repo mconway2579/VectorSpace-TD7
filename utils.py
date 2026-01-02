@@ -14,7 +14,9 @@ def LAP_huber(x, min_priority=1):
 
 
 class DummyOptimizer:
-	def zero_grad(self):
+	def __init__(self):
+		self.param_groups = []
+	def zero_grad(self, set_to_none=True):
 		pass
 	
 	def step(self):
@@ -25,9 +27,9 @@ class DummyOptimizer:
 class Hyperparameters:
 	# Generic
 	batch_size: int = 256
-	buffer_size: int = 1e6
+	buffer_size: int = 1_000_000  # Standard DQN buffer size
 	discount: float = 0.99
-	target_update_rate: int = 250
+	target_update_rate: int = 256  # DQN: update target network every 10k steps
 	exploration_noise: float = 0.1
 	gradient_clip: float = 10.0
 	
@@ -56,6 +58,9 @@ class Hyperparameters:
 	log_loss_weight: float = 1.0
 	prediction_loss_lambda: float = 1.0
 	reconstruction_loss_lambda: float = 1.0
+
+	#backbone Model
+	backbone_lr: float = 2.5e-4
 
 	# Decoder Model
 	decoder_hdim: int = 256
