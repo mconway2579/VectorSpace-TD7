@@ -2,7 +2,6 @@ import numpy as np
 import torch
 from dataclasses import dataclass
 from typing import Callable
-import torch.nn.functional as F
 import torch.nn as nn
 
 
@@ -27,9 +26,9 @@ class DummyOptimizer:
 class Hyperparameters:
 	# Generic
 	batch_size: int = 256
-	buffer_size: int = 1_000_000  # Standard DQN buffer size
+	buffer_size: int = 1_000_000
 	discount: float = 0.99
-	target_update_rate: int = 256  # DQN: update target network every 10k steps
+	target_update_rate: int = 256
 	exploration_noise: float = 0.1
 	gradient_clip: float = 10.0
 	

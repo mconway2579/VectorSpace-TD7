@@ -41,7 +41,8 @@ class LAP(object):
 		self.prioritized = prioritized
 		if prioritized:
 			self.priority = torch.zeros(max_size, device=device)
-			self.max_priority = 1
+			self.max_priority = torch.tensor(1.0, device=device)  # Keep on GPU to avoid sync
+			self._csum_buffer = torch.zeros(max_size, device=device)  # Pre-allocated for cumsum
 
 		# Store action bounds for per-dimension normalization (on GPU)
 		self.normalize_actions = normalize_actions
@@ -78,7 +79,9 @@ class LAP(object):
 	def sample(self):
 		# Sample indices
 		if self.prioritized:
-			csum = torch.cumsum(self.priority[:self.size], 0)
+			# Reuse pre-allocated buffer to avoid GPU memory fragmentation
+			torch.cumsum(self.priority[:self.size], 0, out=self._csum_buffer[:self.size])
+			csum = self._csum_buffer[:self.size]
 			val = torch.rand(size=(self.batch_size,), device=self.device) * csum[-1]
 			self.ind = torch.searchsorted(csum, val)
 		else:
@@ -94,8 +97,10 @@ class LAP(object):
 
 	def update_priority(self, priority):
 		self.priority[self.ind] = priority.reshape(-1).detach()
-		self.max_priority = max(float(priority.detach().max().item()), self.max_priority)
+		# Keep max_priority on GPU to avoid CPU-GPU sync every step
+		batch_max = priority.detach().max()
+		self.max_priority = torch.maximum(batch_max, self.max_priority)
 
 
 	def reset_max_priority(self):
-		self.max_priority = float(self.priority[:self.size].max())
+		self.max_priority = self.priority[:self.size].max()  # Keep on GPU

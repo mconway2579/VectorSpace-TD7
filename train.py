@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import argparse
 import gc
 import logging
@@ -107,10 +108,11 @@ def train_online(RL_agent, env, eval_env, args, writer):
 	# Setup profiler if requested
 	profiler_ctx = nullcontext()
 	if args.profile:
-		# Long profiling windows to capture both data movement and GPU training ops
-		# wait=500: skip initial steps, warmup=50, active=1000: profile 1000 consecutive steps
-		# This ensures we capture multiple training iterations including GPU operations
-		prof_schedule = schedule(wait=500, warmup=50, active=1000, repeat=30)
+		# Minimal profiling to prevent TensorBoard crashes
+		# wait=5000: very large gaps (profile every ~5000 steps)
+		# warmup=100, active=300: only 300 steps per window
+		# repeat=8: only 8 total windows (~8 small trace files)
+		prof_schedule = schedule(wait=5000, warmup=100, active=300, repeat=8)
 
 		# Create profile directory for TensorBoard plugin
 		profile_dir = os.path.join(writer.log_dir, 'plugins', 'profile')
@@ -120,9 +122,9 @@ def train_online(RL_agent, env, eval_env, args, writer):
 			activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
 			schedule=prof_schedule,
 			on_trace_ready=tensorboard_trace_handler(profile_dir),
-			record_shapes=True,
-			profile_memory=True,
-			with_stack=True
+			record_shapes=False,  # Disabled to reduce data size
+			profile_memory=False,  # Disabled to reduce data size
+			with_stack=False  # Disabled to reduce data size
 		)		
 	logger.info(f"Starting training with profiler {profiler_ctx}")
 	with profiler_ctx as prof:
@@ -253,9 +255,10 @@ def main(args):
 	# CUDA optimizations for speed
 	if torch.cuda.is_available():
 		torch.backends.cudnn.benchmark = True  # Auto-tune convolution algorithms
-		# New TF32 API (PyTorch 2.9+) - enables faster matmul on Ampere+ GPUs (RTX 30/40 series)
-		torch.backends.cudnn.conv.fp32_precision = 'tf32'
-		torch.backends.cuda.matmul.fp32_precision = 'tf32'
+		# Configure precision mode
+		# FP32 precision modes for matmul/conv
+		torch.backends.cudnn.conv.fp32_precision = args.precision
+		torch.backends.cuda.matmul.fp32_precision = args.precision
 
 	# Get action space info from the single (unwrapped) action space
 	# AsyncVectorEnv has .single_action_space attribute
@@ -373,7 +376,7 @@ if __name__ == "__main__":
 	# parser.add_argument("--max_timesteps", default=100_000, type=int)
 	# parser.add_argument("--max_timesteps", default=35_000, type=int)
 
-
+	parser.add_argument("--precision", default="tf32", type=str, choices=["tf32", "ieee"], help="Precision mode for FP32 matmul/conv")
 	# Recording
 	parser.add_argument("--record_videos", default=True, action=argparse.BooleanOptionalAction)
 	parser.add_argument("--record_freq", default=None, type=int)
@@ -392,6 +395,7 @@ if __name__ == "__main__":
 
 	# Profiling
 	parser.add_argument("--profile", action="store_true", default=False, help="Enable TensorBoard profiler (profiles steps with schedule)")
+	parser.add_argument("--log_gradients", action="store_true", default=False, help="Enable gradient logging to TensorBoard (causes CPU-GPU sync, reduces performance)")
 
 	def apply_dynamic_defaults(args):
 		dynamnic_record_freq = args.max_timesteps // 10 if args.max_timesteps >= 1e6 else np.inf
@@ -405,16 +409,16 @@ if __name__ == "__main__":
 			args.timesteps_before_training = 5_000
 
 		# Disable checkpointing for Atari environments (designed for continuous control)
-		# is_atari = args.env.startswith("ALE/")
-		# if is_atari and args.use_checkpoints:
-		# 	logger.info(f"Detected Atari environment ({args.env}). Disabling checkpointing (not suitable for discrete action spaces with sparse rewards).")
-		# 	args.use_checkpoints = False
-			# args.max_timesteps = max(args.max_timesteps, 5_000_000)  # Ensure sufficient training time for Atari
+		is_atari = args.env.startswith("ALE/")
+		if is_atari and args.use_checkpoints:
+			logger.info(f"Detected Atari environment ({args.env}). Disabling checkpointing (not suitable for discrete action spaces with sparse rewards).")
+			args.use_checkpoints = False
+			args.max_timesteps = max(args.max_timesteps, 5_000_000)  # Ensure sufficient training time for Atari
 
 		return args
 	
 	#main(args)
-	for env in ["HalfCheetah-v5"]:#, "Hopper-v5"]:#"Ant-v5", "Hopper-v5", "Humanoid-v5"]:#["ALE/Assault-v5", "HalfCheetah-v5"]:#["ALE/Pong-v5", "ALE/Breakout-v5", "HalfCheetah-v5"]:#["Ant-v5", "Hopper-v5"]:#["HalfCheetah-v5"]:#,  #, , "Humanoid-v5", ]:["Humanoid-v5"]:#
+	for env in ["HalfCheetah-v5", "Ant-v5", "Hopper-v5", "ALE/Assault-v5"]:#["ALE/Assault-v5", "HalfCheetah-v5"]:#["ALE/Pong-v5", "ALE/Breakout-v5", "HalfCheetah-v5"]:#["Ant-v5", "Hopper-v5"]:#["HalfCheetah-v5"]:#,  #, , "Humanoid-v5", ]:["Humanoid-v5"]:#
 		for deterministic_actor in [True]:#[False, True]:
 			for encoder in ["td7"]:#, "nflow"]:#, "addition"]:
 				args = parser.parse_args()
@@ -423,9 +427,8 @@ if __name__ == "__main__":
 				args.encoder = encoder
 				args.deterministic_actor = deterministic_actor
 
-				# Set max_timesteps to 50M for Assault
-				# if env == "ALE/Assault-v5":
-				# 	args.max_timesteps = 5_000_000
+				
+				
 
 				args = apply_dynamic_defaults(args)
 				profiler_str = "_profiler" if args.profile else ""
