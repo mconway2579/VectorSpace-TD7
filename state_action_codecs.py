@@ -32,7 +32,7 @@ class TD7Encoder(nn.Module):
 			nn.Linear(hdim, encoder_dim)
 		)
 
-		# state-action encoder
+		# state-action encoder (encoder_dim + action_dim input)
 		self.zsa_mlp = nn.Sequential(
 			nn.Linear(encoder_dim + action_dim, hdim),
 			activ(),
@@ -99,6 +99,7 @@ class NFlowEncoder(nn.Module):
 		super(NFlowEncoder, self).__init__()
 
 		self.activ = activ()
+
 		# state encoder
 		self.zs_mlp = nn.Sequential(
 			nn.Linear(s_backbone_dim, hdim),
@@ -154,7 +155,6 @@ class MLPDecoder(nn.Module):
 
 		self.activ = activ()
 
-		# action decoder
 		self.s1 = nn.Linear(encoder_dim, hdim)
 		self.s2 = nn.Linear(hdim, hdim)
 		self.s3 = nn.Linear(hdim, state_dim[0])

@@ -16,12 +16,10 @@ from nflows.flows.base import Flow
 from nflows.distributions.normal import ConditionalDiagonalNormal
 from nflows.transforms import CompositeTransform
 
-class ProbabilisticActor(nn.Module):
-	def __init__(self, backbone_state_dim, action_dim, is_image_state, encoder_dim=256, hdim=256, activ=nn.ReLU):
-		super(ProbabilisticActor, self).__init__()
 
-		self.activ = activ()
-		self.is_image_state = is_image_state
+class ProbabilisticActor(nn.Module):
+	def __init__(self, backbone_state_dim, action_dim, encoder_dim=256, hdim=256, activ=nn.ReLU):
+		super(ProbabilisticActor, self).__init__()
 
 		self.l0 = nn.Linear(backbone_state_dim, hdim)
 		self.context_dim = encoder_dim + hdim
@@ -49,12 +47,9 @@ class ProbabilisticActor(nn.Module):
 		return action
 
 class DeterministicActor(nn.Module):
-	#essentially mlp that maps a vector in R state_dim+encoder_dim to R_action_dim
-	def __init__(self, backbone_state_dim, action_dim, is_image_state, encoder_dim=256, hdim=256, activ=nn.ReLU):
+	def __init__(self, backbone_state_dim, action_dim, encoder_dim=256, hdim=256, activ=nn.ReLU):
 		super(DeterministicActor, self).__init__()
 
-		self.activ = activ()
-		self.is_image_state = is_image_state
 
 		self.l0 = nn.Linear(backbone_state_dim, hdim)
 		self.context_dim = encoder_dim + hdim
@@ -76,12 +71,10 @@ class DeterministicActor(nn.Module):
 		return action
 	
 class Critic(nn.Module):
-	#essentially mlp that maps a vector in R state_dim+action_dim+2*encoder_dim to R^2
-	def __init__(self, backbone_state_dim, action_dim, is_image_state, encoder_dim=256, hdim=256, activ=nn.ELU):
+	def __init__(self, backbone_state_dim, action_dim, encoder_dim=256, hdim=256, activ=nn.ELU):
 		super(Critic, self).__init__()
 
 		self.activ = activ()
-		self.is_image_state = is_image_state
 
 		self.q01 = nn.Linear(backbone_state_dim + action_dim, hdim)
 		self.q1 = nn.Linear(2*encoder_dim + hdim, hdim)
@@ -112,11 +105,11 @@ class Critic(nn.Module):
 		return torch.cat([q1, q2], 1)
 
 class RewardPredictor(nn.Module):
-	def __init__(self, zs_dim, action_dim, encoder_dim=256, hdim=256, activ=nn.ELU):
+	def __init__(self, zs_dim, action_dim, hdim=256, activ=nn.ELU):
 		super(RewardPredictor, self).__init__()
 
 		self.activ = activ()
-		
+
 		self.r1 = nn.Linear(zs_dim + action_dim + zs_dim, hdim)
 		self.r2 = nn.Linear(hdim, hdim)
 		self.r3 = nn.Linear(hdim, 1)
@@ -180,11 +173,11 @@ class Agent(object):
 			self.encoder = TD7Encoder(self.backbone_dim, action_dim, hp.encoder_dim, hp.enc_hdim, hp.enc_activ).to(self.device)
 		else:
 			raise ValueError(f"Unknown encoder type: {args.encoder}")
-		
+
 		self.encoder_optimizer = torch.optim.Adam(self.encoder.parameters(), lr=hp.encoder_lr)
 		self.fixed_encoder = copy.deepcopy(self.encoder)
 		self.fixed_encoder_target = copy.deepcopy(self.encoder)
-		
+
 		self.decoder = None
 		if self.is_image_state:
 			self.decoder = CNNDecoder( hp.encoder_dim, state_dim ).to(self.device)
@@ -196,17 +189,17 @@ class Agent(object):
 
 		self.actor = None
 		if args.deterministic_actor:
-			self.actor = DeterministicActor(self.backbone_dim, self.action_dim, self.is_image_state, hp.encoder_dim, hp.actor_hdim, hp.actor_activ).to(self.device)
+			self.actor = DeterministicActor(self.backbone_dim, self.action_dim, hp.encoder_dim, hp.actor_hdim, hp.actor_activ).to(self.device)
 		else:
-			self.actor = ProbabilisticActor(self.backbone_dim, self.action_dim, self.is_image_state, hp.encoder_dim, hp.actor_hdim, hp.actor_activ).to(self.device)
+			self.actor = ProbabilisticActor(self.backbone_dim, self.action_dim, hp.encoder_dim, hp.actor_hdim, hp.actor_activ).to(self.device)
 		self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=hp.actor_lr)
 		self.actor_target = copy.deepcopy(self.actor)
 
-		self.critic = Critic(self.backbone_dim, self.action_dim, self.is_image_state, hp.encoder_dim, hp.critic_hdim, hp.critic_activ).to(self.device)
+		self.critic = Critic(self.backbone_dim, self.action_dim, hp.encoder_dim, hp.critic_hdim, hp.critic_activ).to(self.device)
 		self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=hp.critic_lr)
 		self.critic_target = copy.deepcopy(self.critic)
 
-		self.reward_predictor = RewardPredictor(hp.encoder_dim, self.action_dim, hp.encoder_dim, hp.critic_hdim, hp.critic_activ).to(self.device)
+		self.reward_predictor = RewardPredictor(hp.encoder_dim, self.action_dim, hp.critic_hdim, hp.critic_activ).to(self.device)
 		self.reward_predictor_optimizer = torch.optim.Adam(self.reward_predictor.parameters(), lr=hp.critic_lr)
 
 		self.checkpoint_actor = copy.deepcopy(self.actor)
@@ -214,36 +207,6 @@ class Agent(object):
 		self.checkpoint_decoder = copy.deepcopy(self.decoder)
 		self.checkpoint_reward_predictor = copy.deepcopy(self.reward_predictor)
 		self.backbone_checkpoint = copy.deepcopy(self.backbone)
-
-		# Compile networks for faster execution (PyTorch 2.0+)
-		# Note: "reduce-overhead" uses CUDA graphs which conflict with retain_graph=True
-		# Use "default" mode instead for compatibility with the training loop
-		# Disable donated buffers to allow retain_graph=True in backward passes
-		if hasattr(torch, 'compile') and self.device.type == 'cuda' and False:
-			torch._functorch.config.donated_buffer = False
-			compile_mode = "default"
-			# Main networks
-			self.backbone = torch.compile(self.backbone, mode=compile_mode)
-			self.encoder = torch.compile(self.encoder, mode=compile_mode)
-			self.decoder = torch.compile(self.decoder, mode=compile_mode)
-			self.actor = torch.compile(self.actor, mode=compile_mode)
-			self.critic = torch.compile(self.critic, mode=compile_mode)
-			self.reward_predictor = torch.compile(self.reward_predictor, mode=compile_mode)
-			# Target networks
-			self.backbone_target = torch.compile(self.backbone_target, mode=compile_mode)
-			self.actor_target = torch.compile(self.actor_target, mode=compile_mode)
-			self.critic_target = torch.compile(self.critic_target, mode=compile_mode)
-			self.fixed_encoder = torch.compile(self.fixed_encoder, mode=compile_mode)
-			self.fixed_encoder_target = torch.compile(self.fixed_encoder_target, mode=compile_mode)
-			self.fixed_decoder = torch.compile(self.fixed_decoder, mode=compile_mode)
-			self.fixed_decoder_target = torch.compile(self.fixed_decoder_target, mode=compile_mode)
-			# Checkpoint networks
-			self.checkpoint_actor = torch.compile(self.checkpoint_actor, mode=compile_mode)
-			self.checkpoint_encoder = torch.compile(self.checkpoint_encoder, mode=compile_mode)
-			self.checkpoint_decoder = torch.compile(self.checkpoint_decoder, mode=compile_mode)
-			self.checkpoint_reward_predictor = torch.compile(self.checkpoint_reward_predictor, mode=compile_mode)
-			self.backbone_checkpoint = torch.compile(self.backbone_checkpoint, mode=compile_mode)
-			logger.info(f"Compiled all networks with mode={compile_mode}")
 
 		self.replay_buffer = buffer.LAP(state_dim, self.action_dim, self.device, low_action_arr, high_action_arr, hp.buffer_size, hp.batch_size, normalize_actions=True, prioritized=True)
 
@@ -267,7 +230,7 @@ class Agent(object):
 		self.min = 1e8
 		self.max_target = 0
 		self.min_target = 0
-		
+
 		logger.info("#"*20)
 		logger.info("Initialized TD7 Agent")
 		logger.info(f"Encoder: {self.encoder}")
@@ -313,7 +276,7 @@ class Agent(object):
 			if use_exploration:
 				a = a + torch.randn_like(a) * self.hp.exploration_noise
 			# Clamp to [-1, 1] then scale to [low, high] per dimension
-			a = a.clamp(-1, 1)
+			# a = a.clamp(-1, 1) #action should already be in [-1, 1] due to tanh
 			# scaled = center + tanh * scale
 			actions = (self.action_center + a * self.action_scale).cpu().data.numpy()
 			logger.debug(f"final action: {actions.shape=}")
@@ -468,9 +431,11 @@ class Agent(object):
 		encoder_loss = self.get_encoder_loss(backbone_state, env_action, backbone_next_state)
 
 		encoder_loss.backward(retain_graph=True)
+
 		if self.training_steps % self.loss_record_freq == 0:
 			self._log_gradients(self.encoder, "encoder")
 			self._log_gradients(self.backbone, "backbone")
+
 		self.encoder_optimizer.step()
 
 		#########################
@@ -481,8 +446,10 @@ class Agent(object):
 		critic_loss = self.get_critic_loss(backbone_state, env_action, backbone_next_state, reward, not_done, fixed_zs, fixed_zsa, fixed_target_zs)
 
 		critic_loss.backward(retain_graph=True)
+
 		if self.training_steps % self.loss_record_freq == 0:
 			self._log_gradients(self.critic, "critic")
+
 		self.critic_optimizer.step()
 
 		#########################
@@ -494,8 +461,10 @@ class Agent(object):
 			actor_loss = self.get_actor_loss(backbone_state, fixed_zs)
 
 			actor_loss.backward()
+
 			if self.training_steps % self.loss_record_freq == 0:
 				self._log_gradients(self.actor, "actor")
+
 			self.actor_optimizer.step()
 
 		if self.backbone_optimizer is not None:
@@ -512,9 +481,11 @@ class Agent(object):
 		acc_loss = decoder_loss + reward_predictor_loss
 
 		acc_loss.backward()
+
 		if self.training_steps % self.loss_record_freq == 0:
 			self._log_gradients(self.reward_predictor, "reward_predictor")
 			self._log_gradients(self.decoder, "decoder")
+
 		self.reward_predictor_optimizer.step()
 		self.decoder_optimizer.step()
 
@@ -769,28 +740,23 @@ class Agent(object):
 		if self.writer is None:
 			return
 
-		total_norm_sq = 0.0
-		max_abs = 0.0
-
-		for name, p in module.named_parameters():
-			if p.grad is None:
-				continue
-
-			# L2 norm of this parameter's gradient
-			param_norm = p.grad.detach().data.norm(2)
-			total_norm_sq += param_norm.item() ** 2
-
-			# Max absolute value in this gradient tensor
-			param_max = p.grad.detach().data.abs().max().item()
-			if param_max > max_abs:
-				max_abs = param_max
-
-		if total_norm_sq == 0.0 and max_abs == 0.0:
-			# No grads to log (e.g. frozen module)
+		# Skip gradient logging if disabled (avoids CPU-GPU sync overhead)
+		if not self.args.log_gradients:
 			return
 
-		global_l2 = total_norm_sq ** 0.5
-		step = self.training_steps
+		# Collect all gradients first (stay on GPU)
+		grads = [p.grad.detach() for p in module.parameters() if p.grad is not None]
+		if not grads:
+			return
 
+		# Batch GPU operations to minimize syncs
+		norms = torch.stack([g.norm(2) for g in grads])
+		maxes = torch.stack([g.abs().max() for g in grads])
+
+		# Single sync at the end (2 total instead of 2*num_params)
+		global_l2 = norms.norm(2).item()
+		max_abs = maxes.max().item()
+
+		step = self.training_steps
 		self.writer.add_scalar(f"grad/{module_name}/global_l2", global_l2, step)
 		self.writer.add_scalar(f"grad/{module_name}/max_abs", max_abs, step)
