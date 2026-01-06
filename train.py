@@ -65,18 +65,10 @@ def make_env_with_wrappers(env_name, seed=None, render_mode=None, continuous_act
 	if is_atari:
 		# Use continuous_action_threshold if provided, otherwise default to None (fully continuous)
 		if continuous_action_threshold is not None:
-			env = gym.make(env_name, render_mode=render_mode, frameskip=1, continuous=continuous_action_threshold)
+			env = gym.make(env_name, render_mode=render_mode, frameskip=1, continuous=True, continuous_action_threshold=continuous_action_threshold)
 		else:
 			env = gym.make(env_name, render_mode=render_mode, frameskip=1, continuous=True)
-	else:
-		env = gym.make(env_name, render_mode=render_mode)
-	if seed is not None:
-		env.reset(seed=seed)
-		env.action_space.seed(seed)
-
-
-	# Apply wrappers for image observations
-	if is_atari:
+		
 		# Use standard Atari preprocessing: resize to 84x84, grayscale, etc.
 		env = ContinuousAtariPreprocessing(
 			env,
@@ -93,6 +85,11 @@ def make_env_with_wrappers(env_name, seed=None, render_mode=None, continuous_act
 			lambda obs: np.array(obs, dtype=np.float32),  # Stacked frames -> (4, 84, 84)
 			gym.spaces.Box(low=0.0, high=1.0, shape=(4, 84, 84), dtype=np.float32)
 		)
+	else:
+		env = gym.make(env_name, render_mode=render_mode)
+	if seed is not None:
+		env.reset(seed=seed)
+		env.action_space.seed(seed)		
 	
 	return env
 	
@@ -102,8 +99,6 @@ def train_online(RL_agent, env, eval_env, args, writer):
 	evals = []
 	start_time = time.time()
 	allow_train = False
-
-	is_atari = args.env.startswith("ALE/")
 
 	# Setup profiler if requested
 	profiler_ctx = nullcontext()
@@ -129,7 +124,7 @@ def train_online(RL_agent, env, eval_env, args, writer):
 	logger.info(f"Starting training with profiler {profiler_ctx}")
 	with profiler_ctx as prof:
 		# Initialize state and episode tracking
-		state_np, info = env.reset()
+		state_np, info = env.reset(seed=args.seed)
 		# Pre-allocate GPU tensors to avoid repeated CPU->GPU copies
 		state_gpu = torch.empty(state_np.shape, dtype=torch.float32, device=RL_agent.device)
 		action_gpu = torch.empty((env.action_space.shape[0],), dtype=torch.float32, device=RL_agent.device)
@@ -243,7 +238,7 @@ def main(args):
 
 
 	# Evaluation environment
-	eval_env = make_env_with_wrappers(args.env, seed=args.seed + 1000, render_mode="rgb_array", continuous_action_threshold=args.continuous_action_threshold)
+	eval_env = make_env_with_wrappers(args.env, seed=args.seed + 100, render_mode="rgb_array", continuous_action_threshold=args.continuous_action_threshold)
 
 	logger.info("---------------------------------------")
 	logger.info(f"Algorithm: TD7, Env: {args.env}, Seed: {args.seed}")
@@ -252,13 +247,13 @@ def main(args):
 	torch.manual_seed(args.seed)
 	np.random.seed(args.seed)
 
-	# CUDA optimizations for speed
-	if torch.cuda.is_available():
-		torch.backends.cudnn.benchmark = True  # Auto-tune convolution algorithms
-		# Configure precision mode
-		# FP32 precision modes for matmul/conv
-		torch.backends.cudnn.conv.fp32_precision = args.precision
-		torch.backends.cuda.matmul.fp32_precision = args.precision
+	# # CUDA optimizations for speed
+	# if torch.cuda.is_available():
+	# 	torch.backends.cudnn.benchmark = True  # Auto-tune convolution algorithms
+	# 	# Configure precision mode
+	# 	# FP32 precision modes for matmul/conv
+	# 	torch.backends.cudnn.conv.fp32_precision = args.precision
+	# 	torch.backends.cuda.matmul.fp32_precision = args.precision
 
 	# Get action space info from the single (unwrapped) action space
 	# AsyncVectorEnv has .single_action_space attribute
@@ -300,26 +295,7 @@ def main(args):
 		)
 		logger.info("Using Atari hyperparameters")
 	else:
-		hp = Hyperparameters(
-			# Non-Atari (continuous control) hyperparameters
-			batch_size=256,
-			buffer_size=1_000_000,
-			discount=0.99,
-			target_update_rate=250,
-			exploration_noise=0.1,
-			target_policy_noise=0.2,
-			noise_clip=0.5,
-			policy_freq=2,
-			alpha=0.4,
-			min_priority=1,
-			encoder_dim=256,
-			enc_hdim=256,
-			encoder_lr=3e-4,
-			backbone_lr=3e-4,
-			decoder_lr=3e-4,
-			critic_lr=3e-4,
-			actor_lr=3e-4,
-		)
+		hp = Hyperparameters()
 		logger.info("Using continuous control hyperparameters")
 
 	RL_agent = TD7.Agent(state_dim, action_dim, low_action, high_action, args, writer, hp)
@@ -329,7 +305,6 @@ def main(args):
 
 	total_reward_samples = train_online(RL_agent, env, eval_env, args, writer)
 	maybe_record_videos(RL_agent, eval_env, 0, args, extension="_final")
-
 
 	final_model_save_path = os.path.join(args.model_dir, "final_model.pt")
 	logger.info(f"saving final model to {final_model_save_path}")
@@ -358,18 +333,17 @@ if __name__ == "__main__":
 	parser.add_argument("--env", default="ALE/Breakout-v5", type=str)
 
 	parser.add_argument("--deterministic_actor", default=True, action=argparse.BooleanOptionalAction)
-	parser.add_argument("--hard_updates", default=True, action=argparse.BooleanOptionalAction,
+	parser.add_argument("--hard_updates", default=False, action=argparse.BooleanOptionalAction,
 						help="Use hard target updates (like reference TD7) instead of soft Polyak averaging")
 
 	
 	parser.add_argument("--seed", default=0, type=int)
 	parser.add_argument('--use_checkpoints', default=True, action=argparse.BooleanOptionalAction)
 
-
 	# Evaluation
 	parser.add_argument("--timesteps_before_training", default=25e3, type=int)
-	# parser.add_argument("--eval_freq", default=5e3, type=int)
-	parser.add_argument("--eval_freq", default=10e3, type=int)
+	parser.add_argument("--eval_freq", default=5e3, type=int)
+	# parser.add_argument("--eval_freq", default=10e3, type=int)
 
 	parser.add_argument("--eval_eps", default=10, type=int)
 	# parser.add_argument("--max_timesteps", default=5_000_000, type=int)
@@ -399,8 +373,8 @@ if __name__ == "__main__":
 	parser.add_argument("--log_gradients", action="store_true", default=False, help="Enable gradient logging to TensorBoard (causes CPU-GPU sync, reduces performance)")
 
 	def apply_dynamic_defaults(args):
-		dynamnic_record_freq = args.max_timesteps // 10 if args.max_timesteps >= 1e6 else np.inf
 		if args.record_freq is None:
+			dynamnic_record_freq = args.max_timesteps // 10 if args.max_timesteps >= 1e6 else np.inf
 			args.record_freq = dynamnic_record_freq
 
 		if args.profile:
@@ -429,9 +403,6 @@ if __name__ == "__main__":
 				args.env = env
 				args.encoder = encoder
 				args.deterministic_actor = deterministic_actor
-
-				
-				
 
 				args = apply_dynamic_defaults(args)
 				profiler_str = "_profiler" if args.profile else ""

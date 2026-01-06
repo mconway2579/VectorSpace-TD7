@@ -52,12 +52,9 @@ class LAP(object):
 
 
 	def add(self, state, action, next_state, reward, done):
-
-
 		# Ensure action has correct shape
 		if action.ndim == 0:
 			action = action.unsqueeze(0)
-
 		# Store values
 		self.state[self.ptr] = state
 		# Normalize action to [-1, 1] per dimension: normalized = 2 * (action - low) / (high - low) - 1

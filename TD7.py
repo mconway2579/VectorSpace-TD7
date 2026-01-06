@@ -161,7 +161,8 @@ class Agent(object):
 			self.backbone_dim = state_dim[0]
 			self.backbone = nn.Identity().to(self.device)
 			self.backbone_optimizer = None
-		self.backbone_target = copy.deepcopy(self.backbone)
+		self.fixed_backbone = copy.deepcopy(self.backbone)
+		self.fixed_backbone_target = copy.deepcopy(self.backbone)
 
 		self.encoder = None
 		logger.debug(f"{state_dim=}, {action_dim=}, {self.is_image_state=}")
@@ -261,6 +262,8 @@ class Agent(object):
 			elif not self.is_image_state and len(state.shape) == 2:
 				# Batched vector states: (B, state_dim) -> keep as is
 				pass
+			else:
+				raise ValueError(f"[select_action] not sure what happened here {self.is_image_state=}, {state.shape=}")
 
 			batch_size = state.shape[0]
 
@@ -276,7 +279,7 @@ class Agent(object):
 				a = self.actor(backbone_state, zs)
 			logger.debug(f"actor output: {a.shape=}, {zs.shape=}")
 
-			if use_exploration:
+			if use_exploration and isinstance(self.actor, DeterministicActor):
 				a = a + torch.randn_like(a) * self.hp.exploration_noise
 			a = a.clamp(-1, 1) #action should already be in [-1, 1] due to tanh
 
@@ -349,6 +352,7 @@ class Agent(object):
 
 	def get_critic_loss(self, backbone_state, env_action, backbone_next_state, reward, not_done, fixed_zs, fixed_zsa, fixed_target_zs):
 		# Use pre-computed values if provided, otherwise compute them
+		Q_target = None
 		with torch.no_grad():
 
 			next_action = self.actor_target(backbone_next_state, fixed_target_zs) #actor_out at t+1
@@ -396,7 +400,8 @@ class Agent(object):
 	def soft_update_targets(self):
 		tau = 1/self.hp.target_update_rate
 		target_source = [
-			(self.backbone_target, self.backbone),
+			(self.fixed_backbone_target, self.fixed_backbone),
+			(self.fixed_backbone, self.backbone),
 			(self.actor_target, self.actor),
 			(self.critic_target, self.critic),
 			(self.fixed_encoder_target, self.fixed_encoder),
@@ -414,82 +419,82 @@ class Agent(object):
 		self.fixed_encoder.load_state_dict(self.encoder.state_dict())
 		self.fixed_decoder_target.load_state_dict(self.fixed_decoder.state_dict())
 		self.fixed_decoder.load_state_dict(self.decoder.state_dict())
-		self.backbone_target.load_state_dict(self.backbone.state_dict())
+		self.fixed_backbone_target.load_state_dict(self.fixed_backbone.state_dict())
+		self.fixed_backbone.load_state_dict(self.backbone.state_dict())
 	def train(self):
 		self.training_steps += 1
 
 		state, env_action, next_state, reward, not_done = self.replay_buffer.sample()
 
 		#########################
-		# Update Encoder + Backbone
+		# Fixed Computations
 		#########################
-		if self.backbone_optimizer is not None:
-			self.backbone_optimizer.zero_grad(set_to_none=False)
-		self.encoder_optimizer.zero_grad(set_to_none=False)
-
-		backbone_state = self.backbone(state)
-		backbone_next_state = self.backbone(next_state)
-		encoder_loss = self.get_encoder_loss(backbone_state, env_action, backbone_next_state)
-
-		# Pre-compute shared forward passes (must be after backbone_state for alignment)
+		
+		# Pre-compute shared forward passes
 		with torch.no_grad():
+			fixed_backbone_state = self.fixed_backbone(state)
+			fixed_backbone_next_state = self.fixed_backbone(next_state)
 			# For current state: use main backbone output (aligned with critic input)
-			fixed_zs = self.fixed_encoder.zs(backbone_state)
+			fixed_zs = self.fixed_encoder.zs(fixed_backbone_state)
 			fixed_zsa = self.fixed_encoder.zsa(fixed_zs, env_action)
 			# For target computation: use target backbone (more stable for Q-targets)
-			fixed_backbone_next_state = self.backbone_target(next_state)
+			fixed_backbone_next_state = self.fixed_backbone_target(next_state)
 			fixed_target_zs = self.fixed_encoder_target.zs(fixed_backbone_next_state)
 
-		encoder_loss.backward(retain_graph=self.is_image_state)
+		#########################
+		# Compute Backbone
+		#########################
+		backbone_state = self.backbone(state)
+		backbone_next_state = self.backbone(next_state)
 
+		#########################
+		# Update Encoder
+		#########################
+		encoder_loss = self.get_encoder_loss(backbone_state, env_action, backbone_next_state)
+		self.encoder_optimizer.zero_grad(set_to_none=False)
+		encoder_loss.backward(retain_graph=self.is_image_state)
 		if self.training_steps % self.loss_record_freq == 0:
 			self._log_gradients(self.encoder, "encoder")
-			self._log_gradients(self.backbone, "backbone")
-
 		self.encoder_optimizer.step()
 
 		#########################
 		# Update Critic
 		#########################
-		self.critic_optimizer.zero_grad(set_to_none=False)
-
 		critic_loss = self.get_critic_loss(backbone_state, env_action, backbone_next_state, reward, not_done, fixed_zs, fixed_zsa, fixed_target_zs)
-
+		self.critic_optimizer.zero_grad(set_to_none=False)
 		critic_loss.backward(retain_graph=self.is_image_state)
-
 		if self.training_steps % self.loss_record_freq == 0:
 			self._log_gradients(self.critic, "critic")
-
 		self.critic_optimizer.step()
 
 		#########################
 		# Update Actor
 		#########################
 		if self.training_steps % self.hp.policy_freq == 0:
-			self.actor_optimizer.zero_grad(set_to_none=False)
-
 			actor_loss = self.get_actor_loss(backbone_state, fixed_zs)
-
+			self.actor_optimizer.zero_grad(set_to_none=False)
 			actor_loss.backward()
-
 			if self.training_steps % self.loss_record_freq == 0:
 				self._log_gradients(self.actor, "actor")
-
 			self.actor_optimizer.step()
 
+		#########################
+		# Update Backbone
+		#########################
 		if self.backbone_optimizer is not None:
+			self.backbone_optimizer.zero_grad(set_to_none=False)
 			self.backbone_optimizer.step()
+			self._log_gradients(self.backbone, "backbone")
+
 
 		#########################
-		# Update Decoder & reward_predictor
+		# Update Decoder & reward_predictor in one backward pass
 		#########################
-		self.reward_predictor_optimizer.zero_grad(set_to_none=False)
-		self.decoder_optimizer.zero_grad(set_to_none=False)
-
 		decoder_loss = self.get_decoder_loss(state, next_state, fixed_zs, fixed_zsa)
 		reward_predictor_loss = self.get_reward_predictor_loss(env_action, reward, fixed_zs, fixed_zsa)
 		acc_loss = decoder_loss + reward_predictor_loss
-
+		self.reward_predictor_optimizer.zero_grad(set_to_none=False)
+		self.decoder_optimizer.zero_grad(set_to_none=False)
 		acc_loss.backward()
 
 		if self.training_steps % self.loss_record_freq == 0:
@@ -534,8 +539,6 @@ class Agent(object):
 			self.checkpoint_encoder.load_state_dict(self.fixed_encoder.state_dict())
 			self.checkpoint_decoder.load_state_dict(self.fixed_decoder.state_dict())
 			self.checkpoint_reward_predictor.load_state_dict(self.reward_predictor.state_dict())
-
-			
 			self.train_and_reset()
 
 
@@ -571,7 +574,8 @@ class Agent(object):
 
 			# Networks
 			"backbone": self.backbone.state_dict(),
-			"backbone_target": self.backbone_target.state_dict(),
+			"fixed_backbone": self.fixed_backbone.state_dict(),
+			"fixed_backbone_target": self.fixed_backbone_target.state_dict(),
 
 			"critic": self.critic.state_dict(),
 			"critic_target": self.critic_target.state_dict(),
@@ -653,7 +657,8 @@ class Agent(object):
 
 		# Networks
 		agent.backbone.load_state_dict(checkpoint["backbone"])
-		agent.backbone_target.load_state_dict(checkpoint["backbone_target"])
+		agent.fixed_backbone.load_state_dict(checkpoint["fixed_backbone"])
+		agent.fixed_backbone_target.load_state_dict(checkpoint["fixed_backbone_target"])
 
 		agent.critic.load_state_dict(checkpoint["critic"])
 		agent.critic_target.load_state_dict(checkpoint["critic_target"])
@@ -708,8 +713,8 @@ class Agent(object):
 
 		# Move all models to the new device
 		self.backbone.to(device)
-		self.backbone_target.to(device)
-
+		self.fixed_backbone.to(device)
+		self.fixed_backbone_target.to(device)
 
 		self.encoder.to(device)
 		self.fixed_encoder.to(device)
