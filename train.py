@@ -407,7 +407,7 @@ if __name__ == "__main__":
 				args = apply_dynamic_defaults(args)
 				profiler_str = "_profiler" if args.profile else ""
 				actor_str = f"DeterministicActor" if args.deterministic_actor else "ProbabilisticActor"
-				args.dir_name = f"{encoder}_{args.env.replace('/', '_')}_{actor_str}_seed_{args.seed}_{int(args.max_timesteps)}{profiler_str}"
+				args.dir_name = f"ATARIBRANCH_{encoder}_{args.env.replace('/', '_')}_{actor_str}_seed_{args.seed}_{int(args.max_timesteps)}{profiler_str}"
 
 				main(args)
 				gc.collect()  # Python garbage collection
