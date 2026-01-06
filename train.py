@@ -216,9 +216,9 @@ if __name__ == "__main__":
 		return args
 	
 	#main(args)
-	for env in ["Ant-v5", "Hopper-v5"]:#["HalfCheetah-v5"]:#,  #, , "Humanoid-v5", ]:["Humanoid-v5"]:#
-		for deterministic_actor in [False, True]:
-			for encoder in ["nflow",  "td7"]:#, "addition"]:
+	for env in ["HalfCheetah-v5"]:# ["Ant-v5", "Hopper-v5"]:#["HalfCheetah-v5"]:#,  #, , "Humanoid-v5", ]:["Humanoid-v5"]:#
+		for deterministic_actor in [True]:
+			for encoder in ["td7"]:#, "addition"]:
 				args = parser.parse_args()
 				args = apply_dynamic_defaults(args)
 
@@ -226,7 +226,7 @@ if __name__ == "__main__":
 				args.encoder = encoder
 				args.deterministic_actor = deterministic_actor
 				actor_str = f"DeterministicActor" if args.deterministic_actor else "ProbabilisticActor"
-				args.dir_name = f"{encoder}_{args.env}_{actor_str}_seed_{args.seed}_{int(args.max_timesteps)}"
+				args.dir_name = f"MainBranch_{encoder}_{args.env}_{actor_str}_seed_{args.seed}_{int(args.max_timesteps)}"
 				
 				main(args)
 				gc.collect()  # Python garbage collection
