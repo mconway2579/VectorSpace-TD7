@@ -298,7 +298,6 @@ def main(args):
 			critic_hdim=512,
 			decoder_hdim=512,
 		)
-		args.use_checkpoints = False  # Disable checkpointing for Atari
 		logger.info("Using Atari hyperparameters")
 	else:
 		hp = Hyperparameters(
@@ -359,6 +358,8 @@ if __name__ == "__main__":
 	parser.add_argument("--env", default="ALE/Breakout-v5", type=str)
 
 	parser.add_argument("--deterministic_actor", default=True, action=argparse.BooleanOptionalAction)
+	parser.add_argument("--hard_updates", default=True, action=argparse.BooleanOptionalAction,
+						help="Use hard target updates (like reference TD7) instead of soft Polyak averaging")
 
 	
 	parser.add_argument("--seed", default=0, type=int)
@@ -410,15 +411,17 @@ if __name__ == "__main__":
 
 		# Disable checkpointing for Atari environments (designed for continuous control)
 		is_atari = args.env.startswith("ALE/")
-		if is_atari and args.use_checkpoints:
-			logger.info(f"Detected Atari environment ({args.env}). Disabling checkpointing (not suitable for discrete action spaces with sparse rewards).")
+		if is_atari:
+			logger.info(f"Detected Atari environment ({args.env}).")
 			args.use_checkpoints = False
 			args.max_timesteps = max(args.max_timesteps, 5_000_000)  # Ensure sufficient training time for Atari
+		else:
+			args.use_checkpoints = True
 
 		return args
 	
 	#main(args)
-	for env in ["HalfCheetah-v5", "Ant-v5", "Hopper-v5", "ALE/Assault-v5"]:#["ALE/Assault-v5", "HalfCheetah-v5"]:#["ALE/Pong-v5", "ALE/Breakout-v5", "HalfCheetah-v5"]:#["Ant-v5", "Hopper-v5"]:#["HalfCheetah-v5"]:#,  #, , "Humanoid-v5", ]:["Humanoid-v5"]:#
+	for env in ["HalfCheetah-v5"]:#, "Ant-v5", "Hopper-v5", "ALE/Assault-v5"]:#["ALE/Assault-v5", "HalfCheetah-v5"]:#["ALE/Pong-v5", "ALE/Breakout-v5", "HalfCheetah-v5"]:#["Ant-v5", "Hopper-v5"]:#["HalfCheetah-v5"]:#,  #, , "Humanoid-v5", ]:["Humanoid-v5"]:#
 		for deterministic_actor in [True]:#[False, True]:
 			for encoder in ["td7"]:#, "nflow"]:#, "addition"]:
 				args = parser.parse_args()

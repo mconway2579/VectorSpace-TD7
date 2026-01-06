@@ -237,6 +237,9 @@ class Agent(object):
 		logger.info(f"Decoder: {self.decoder}")
 		logger.info(f"Critic: {self.critic}")
 		logger.info(f"Actor: {self.actor}")
+		logger.info(f"Reward Predictor: {self.reward_predictor}")
+		logger.info(f"Backbone: {self.backbone}")
+		logger.info(f"{self.args.hard_updates=}")
 		logger.info("#"*20)
 
 	def select_action(self, state, use_checkpoint=False, use_exploration=True):
@@ -275,8 +278,9 @@ class Agent(object):
 
 			if use_exploration:
 				a = a + torch.randn_like(a) * self.hp.exploration_noise
+			a = a.clamp(-1, 1) #action should already be in [-1, 1] due to tanh
+
 			# Clamp to [-1, 1] then scale to [low, high] per dimension
-			# a = a.clamp(-1, 1) #action should already be in [-1, 1] due to tanh
 			# scaled = center + tanh * scale
 			actions = (self.action_center + a * self.action_scale).cpu().data.numpy()
 			logger.debug(f"final action: {actions.shape=}")
@@ -291,8 +295,7 @@ class Agent(object):
 		pred_zs = self.encoder.zsa(zs, env_action)
 
 		prediction_loss = F.mse_loss(pred_zs, next_zs)
-		# reconstruction_loss = F.mse_loss(self.decoder.decode_state(zs), state) + F.mse_loss(self.decoder.decode_state(pred_zs), next_state)
-		encoder_loss =  (self.hp.prediction_loss_lambda * prediction_loss)# + (self.hp.reconstruction_loss_lambda * reconstruction_loss)
+		encoder_loss =  (self.hp.prediction_loss_lambda * prediction_loss)
 		log_loss = None
 		if self.args.encoder == "nflow":
 			context = torch.cat([zs, env_action], dim=-1)
@@ -404,33 +407,40 @@ class Agent(object):
 		for target, source in target_source:
 			for target_param, source_param in zip(target.parameters(), source.parameters()):
 				target_param.data.copy_(tau * source_param.data + (1 - tau) * target_param.data)
-
+	def hard_update_targets(self):
+		self.actor_target.load_state_dict(self.actor.state_dict())
+		self.critic_target.load_state_dict(self.critic.state_dict())
+		self.fixed_encoder_target.load_state_dict(self.fixed_encoder.state_dict())
+		self.fixed_encoder.load_state_dict(self.encoder.state_dict())
+		self.fixed_decoder_target.load_state_dict(self.fixed_decoder.state_dict())
+		self.fixed_decoder.load_state_dict(self.decoder.state_dict())
+		self.backbone_target.load_state_dict(self.backbone.state_dict())
 	def train(self):
 		self.training_steps += 1
 
 		state, env_action, next_state, reward, not_done = self.replay_buffer.sample()
 
-		# Pre-compute shared forward passes to avoid redundant computation
-		with torch.no_grad():
-			# These are used by critic, actor, decoder, and reward_predictor
-			fixed_backbone_state = self.backbone_target(state)
-			fixed_zs = self.fixed_encoder.zs(fixed_backbone_state)
-			fixed_zsa = self.fixed_encoder.zsa(fixed_zs, env_action)
-			fixed_backbone_next_state = self.backbone_target(next_state)
-			fixed_target_zs = self.fixed_encoder_target.zs(fixed_backbone_next_state)
-
 		#########################
 		# Update Encoder + Backbone
 		#########################
 		if self.backbone_optimizer is not None:
-			self.backbone_optimizer.zero_grad(set_to_none=True)
-		self.encoder_optimizer.zero_grad(set_to_none=True)
+			self.backbone_optimizer.zero_grad(set_to_none=False)
+		self.encoder_optimizer.zero_grad(set_to_none=False)
 
 		backbone_state = self.backbone(state)
 		backbone_next_state = self.backbone(next_state)
 		encoder_loss = self.get_encoder_loss(backbone_state, env_action, backbone_next_state)
 
-		encoder_loss.backward(retain_graph=True)
+		# Pre-compute shared forward passes (must be after backbone_state for alignment)
+		with torch.no_grad():
+			# For current state: use main backbone output (aligned with critic input)
+			fixed_zs = self.fixed_encoder.zs(backbone_state)
+			fixed_zsa = self.fixed_encoder.zsa(fixed_zs, env_action)
+			# For target computation: use target backbone (more stable for Q-targets)
+			fixed_backbone_next_state = self.backbone_target(next_state)
+			fixed_target_zs = self.fixed_encoder_target.zs(fixed_backbone_next_state)
+
+		encoder_loss.backward(retain_graph=self.is_image_state)
 
 		if self.training_steps % self.loss_record_freq == 0:
 			self._log_gradients(self.encoder, "encoder")
@@ -441,11 +451,11 @@ class Agent(object):
 		#########################
 		# Update Critic
 		#########################
-		self.critic_optimizer.zero_grad(set_to_none=True)
+		self.critic_optimizer.zero_grad(set_to_none=False)
 
 		critic_loss = self.get_critic_loss(backbone_state, env_action, backbone_next_state, reward, not_done, fixed_zs, fixed_zsa, fixed_target_zs)
 
-		critic_loss.backward(retain_graph=True)
+		critic_loss.backward(retain_graph=self.is_image_state)
 
 		if self.training_steps % self.loss_record_freq == 0:
 			self._log_gradients(self.critic, "critic")
@@ -456,7 +466,7 @@ class Agent(object):
 		# Update Actor
 		#########################
 		if self.training_steps % self.hp.policy_freq == 0:
-			self.actor_optimizer.zero_grad(set_to_none=True)
+			self.actor_optimizer.zero_grad(set_to_none=False)
 
 			actor_loss = self.get_actor_loss(backbone_state, fixed_zs)
 
@@ -473,8 +483,8 @@ class Agent(object):
 		#########################
 		# Update Decoder & reward_predictor
 		#########################
-		self.reward_predictor_optimizer.zero_grad(set_to_none=True)
-		self.decoder_optimizer.zero_grad(set_to_none=True)
+		self.reward_predictor_optimizer.zero_grad(set_to_none=False)
+		self.decoder_optimizer.zero_grad(set_to_none=False)
 
 		decoder_loss = self.get_decoder_loss(state, next_state, fixed_zs, fixed_zsa)
 		reward_predictor_loss = self.get_reward_predictor_loss(env_action, reward, fixed_zs, fixed_zsa)
@@ -493,17 +503,17 @@ class Agent(object):
 		#########################
 		# Update Iteration
 		#########################
+		if not self.args.hard_updates:
+			self.soft_update_targets()
 		if self.training_steps % self.hp.target_update_rate == 0:
-			# self.actor_target.load_state_dict(self.actor.state_dict())
-			# self.critic_target.load_state_dict(self.critic.state_dict())
-			# self.fixed_encoder_target.load_state_dict(self.fixed_encoder.state_dict())
-			# self.fixed_encoder.load_state_dict(self.encoder.state_dict())
-			# self.fixed_decoder_target.load_state_dict(self.fixed_decoder.state_dict())
-			# self.fixed_decoder.load_state_dict(self.decoder.state_dict())
 			self.replay_buffer.reset_max_priority()
 			self.max_target = self.max
 			self.min_target = self.min
-		self.soft_update_targets()
+			if self.args.hard_updates:
+				self.hard_update_targets()
+				
+
+			
 
 	# If using checkpoints: run when each episode terminates
 	def maybe_train_and_checkpoint(self, ep_timesteps, ep_return):
