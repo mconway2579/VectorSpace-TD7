@@ -1,4 +1,7 @@
+import logging
 import torch
+
+logger = logging.getLogger(__name__)
 
 
 class LAP(object):
@@ -52,6 +55,7 @@ class LAP(object):
 
 
 	def add(self, state, action, next_state, reward, done):
+		logger.debug(f"[add] {self.ptr=}, {self.size=}, {state.shape=}, {action.shape=}")
 		# Ensure action has correct shape
 		if action.ndim == 0:
 			action = action.unsqueeze(0)
@@ -59,7 +63,10 @@ class LAP(object):
 		self.state[self.ptr] = state
 		# Normalize action to [-1, 1] per dimension: normalized = 2 * (action - low) / (high - low) - 1
 		if self.normalize_actions:
-			self.action[self.ptr] = 2.0 * (action - self.low_action_arr) / self.action_range - 1.0
+			normalized_action = 2.0 * (action - self.low_action_arr) / self.action_range - 1.0
+			if torch.isnan(normalized_action).any() or torch.isinf(normalized_action).any():
+				logger.error(f"[add] NaN/Inf in normalized action! {action=}, {self.low_action_arr=}, {self.action_range=}")
+			self.action[self.ptr] = normalized_action
 		else:
 			self.action[self.ptr] = action
 		self.next_state[self.ptr] = next_state
@@ -81,6 +88,12 @@ class LAP(object):
 			csum = self._csum_buffer[:self.size]
 			val = torch.rand(size=(self.batch_size,), device=self.device) * csum[-1]
 			self.ind = torch.searchsorted(csum, val)
+			logger.debug(f"[sample] {self.size=}, {csum.shape=}, {csum[-1]=}, {val.min()=}, {val.max()=}")
+			logger.debug(f"[sample] {self.ind.min()=}, {self.ind.max()=}, max_valid={self.size - 1}")
+			# Clamp to valid range - searchsorted can return self.size due to float precision
+			if self.ind.max() >= self.size:
+				logger.warning(f"[sample] Out of bounds index detected! {self.ind.max()=} >= {self.size=}")
+				self.ind = self.ind.clamp(max=self.size - 1)
 		else:
 			self.ind = torch.randint(0, self.size, size=(self.batch_size,), device=self.device)
 
@@ -93,6 +106,9 @@ class LAP(object):
 		)
 
 	def update_priority(self, priority):
+		logger.debug(f"[update_priority] {priority.shape=}, {self.ind.shape=}, {self.ind.max()=}")
+		if torch.isnan(priority).any() or torch.isinf(priority).any():
+			logger.error(f"[update_priority] NaN/Inf in priority! {priority=}")
 		self.priority[self.ind] = priority.reshape(-1).detach()
 		# Keep max_priority on GPU to avoid CPU-GPU sync every step
 		batch_max = priority.detach().max()
