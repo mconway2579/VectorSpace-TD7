@@ -44,8 +44,7 @@ class LAP(object):
 		self.prioritized = prioritized
 		if prioritized:
 			self.priority = torch.zeros(max_size, device=device)
-			self.max_priority = torch.tensor(1.0, device=device)  # Keep on GPU to avoid sync
-			self._csum_buffer = torch.zeros(max_size, device=device)  # Pre-allocated for cumsum
+			self.max_priority = 1.0  # Keep as Python float to avoid GPU scalar issues
 
 		# Store action bounds for per-dimension normalization (on GPU)
 		self.normalize_actions = normalize_actions
@@ -83,17 +82,13 @@ class LAP(object):
 	def sample(self):
 		# Sample indices
 		if self.prioritized:
-			# Reuse pre-allocated buffer to avoid GPU memory fragmentation
-			torch.cumsum(self.priority[:self.size], 0, out=self._csum_buffer[:self.size])
-			csum = self._csum_buffer[:self.size]
+			# Compute cumsum fresh each time (avoid in-place out= which may cause driver issues)
+			csum = torch.cumsum(self.priority[:self.size], dim=0)
 			val = torch.rand(size=(self.batch_size,), device=self.device) * csum[-1]
-			self.ind = torch.searchsorted(csum, val)
+			# Always clamp to avoid out-of-bounds from float precision
+			self.ind = torch.searchsorted(csum, val).clamp(max=self.size - 1)
 			logger.debug(f"[sample] {self.size=}, {csum.shape=}, {csum[-1]=}, {val.min()=}, {val.max()=}")
 			logger.debug(f"[sample] {self.ind.min()=}, {self.ind.max()=}, max_valid={self.size - 1}")
-			# Clamp to valid range - searchsorted can return self.size due to float precision
-			if self.ind.max() >= self.size:
-				logger.warning(f"[sample] Out of bounds index detected! {self.ind.max()=} >= {self.size=}")
-				self.ind = self.ind.clamp(max=self.size - 1)
 		else:
 			self.ind = torch.randint(0, self.size, size=(self.batch_size,), device=self.device)
 
@@ -106,14 +101,16 @@ class LAP(object):
 		)
 
 	def update_priority(self, priority):
+		if not self.prioritized:
+			return
 		logger.debug(f"[update_priority] {priority.shape=}, {self.ind.shape=}, {self.ind.max()=}")
 		if torch.isnan(priority).any() or torch.isinf(priority).any():
 			logger.error(f"[update_priority] NaN/Inf in priority! {priority=}")
 		self.priority[self.ind] = priority.reshape(-1).detach()
-		# Keep max_priority on GPU to avoid CPU-GPU sync every step
-		batch_max = priority.detach().max()
-		self.max_priority = torch.maximum(batch_max, self.max_priority)
+		self.max_priority = max(float(priority.max().item()), self.max_priority)
 
 
 	def reset_max_priority(self):
-		self.max_priority = self.priority[:self.size].max()  # Keep on GPU
+		if not self.prioritized:
+			return
+		self.max_priority = float(self.priority[:self.size].max().item())
