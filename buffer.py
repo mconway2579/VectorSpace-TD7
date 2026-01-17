@@ -28,15 +28,14 @@ class LAP(object):
 		self.action_dim = action_dim
 
 		# Store everything in VRAM
+		state_buffer_shape = None
 		if isinstance(state_dim, tuple):
-			self.state_shape = state_dim
-			self.state = torch.zeros((max_size, *state_dim), dtype=torch.float32, device=device)
-			self.next_state = torch.zeros((max_size, *state_dim), dtype=torch.float32, device=device)
+			state_buffer_shape = (max_size, *state_dim)
 		else:
-			self.state_shape = (state_dim,)
-			self.state = torch.zeros((max_size, state_dim), dtype=torch.float32, device=device)
-			self.next_state = torch.zeros((max_size, state_dim), dtype=torch.float32, device=device)
+			state_buffer_shape = (max_size, state_dim)
 
+		self.state = torch.zeros(state_buffer_shape, dtype=torch.float32, device=device)
+		self.next_state = torch.zeros(state_buffer_shape, dtype=torch.float32, device=device)
 		self.action = torch.zeros((max_size, action_dim), dtype=torch.float32, device=device)
 		self.reward = torch.zeros((max_size, 1), dtype=torch.float32, device=device)
 		self.not_done = torch.zeros((max_size, 1), dtype=torch.float32, device=device)
@@ -44,7 +43,7 @@ class LAP(object):
 		self.prioritized = prioritized
 		if prioritized:
 			self.priority = torch.zeros(max_size, device=device)
-			self.max_priority = 1.0  # Keep as Python float to avoid GPU scalar issues
+			self.max_priority = torch.tensor(1.0, device=device)  # Keep on GPU to avoid sync
 
 		# Store action bounds for per-dimension normalization (on GPU)
 		self.normalize_actions = normalize_actions
@@ -52,23 +51,23 @@ class LAP(object):
 		self.high_action_arr = torch.tensor(high_action_arr, dtype=torch.float32, device=device)
 		self.action_range = self.high_action_arr - self.low_action_arr
 
+		# Pre-allocate index buffer
+		self.ind = torch.zeros(batch_size, dtype=torch.long, device=device)
+
+	@torch.compile(mode="reduce-overhead")
+	def _normalize_action(self, action, low_arr, action_range):
+		"""Normalize action - compiled for performance."""
+		return 2.0 * (action - low_arr) / action_range - 1.0
 
 	def add(self, state, action, next_state, reward, done):
-		logger.debug(f"[add] {self.ptr=}, {self.size=}, {state.shape=}, {action.shape=}")
-		# Ensure action has correct shape
-		if action.ndim == 0:
-			action = action.unsqueeze(0)
-		# Store values
-		self.state[self.ptr] = state
-		# Normalize action to [-1, 1] per dimension: normalized = 2 * (action - low) / (high - low) - 1
+		# Normalize action inline
 		if self.normalize_actions:
-			normalized_action = 2.0 * (action - self.low_action_arr) / self.action_range - 1.0
-			if torch.isnan(normalized_action).any() or torch.isinf(normalized_action).any():
-				logger.error(f"[add] NaN/Inf in normalized action! {action=}, {self.low_action_arr=}, {self.action_range=}")
-			self.action[self.ptr] = normalized_action
-		else:
-			self.action[self.ptr] = action
-		self.next_state[self.ptr] = next_state
+			action = self._normalize_action(action, self.low_action_arr, self.action_range)
+
+		# Store values - use non_blocking=True for async GPU transfers
+		self.state[self.ptr].copy_(state, non_blocking=True)
+		self.action[self.ptr].copy_(action, non_blocking=True)
+		self.next_state[self.ptr].copy_(next_state, non_blocking=True)
 		self.reward[self.ptr] = reward
 		self.not_done[self.ptr] = 1. - float(done)
 
@@ -79,16 +78,15 @@ class LAP(object):
 		self.size = min(self.size + 1, self.max_size)
 
 
+	def _sample_indices_prioritized(self):
+		"""Prioritized sampling - dynamic size incompatible with CUDA graphs."""
+		csum = torch.cumsum(self.priority[:self.size], 0)
+		rand_scaled = torch.rand(self.batch_size, device=self.device) * csum[-1]
+		return torch.searchsorted(csum, rand_scaled).clamp(max=self.size - 1)
+
 	def sample(self):
-		# Sample indices
 		if self.prioritized:
-			# Compute cumsum fresh each time (avoid in-place out= which may cause driver issues)
-			csum = torch.cumsum(self.priority[:self.size], dim=0)
-			val = torch.rand(size=(self.batch_size,), device=self.device) * csum[-1]
-			# Always clamp to avoid out-of-bounds from float precision
-			self.ind = torch.searchsorted(csum, val).clamp(max=self.size - 1)
-			logger.debug(f"[sample] {self.size=}, {csum.shape=}, {csum[-1]=}, {val.min()=}, {val.max()=}")
-			logger.debug(f"[sample] {self.ind.min()=}, {self.ind.max()=}, max_valid={self.size - 1}")
+			self.ind = self._sample_indices_prioritized()
 		else:
 			self.ind = torch.randint(0, self.size, size=(self.batch_size,), device=self.device)
 
@@ -101,16 +99,11 @@ class LAP(object):
 		)
 
 	def update_priority(self, priority):
-		if not self.prioritized:
-			return
-		logger.debug(f"[update_priority] {priority.shape=}, {self.ind.shape=}, {self.ind.max()=}")
-		if torch.isnan(priority).any() or torch.isinf(priority).any():
-			logger.error(f"[update_priority] NaN/Inf in priority! {priority=}")
-		self.priority[self.ind] = priority.reshape(-1).detach()
-		self.max_priority = max(float(priority.max().item()), self.max_priority)
+		"""Update priorities for sampled transitions."""
+		priority_flat = priority.detach().reshape(-1)
+		self.priority[self.ind] = priority_flat
+		self.max_priority = torch.maximum(priority_flat.max(), self.max_priority)
 
 
 	def reset_max_priority(self):
-		if not self.prioritized:
-			return
-		self.max_priority = float(self.priority[:self.size].max().item())
+		self.max_priority = self.priority[:self.size].max()  # Keep on GPU
