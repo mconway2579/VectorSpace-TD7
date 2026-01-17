@@ -145,14 +145,12 @@ def train_online(RL_agent, env, eval_env, args, writer):
 			# Get actions for current state
 			if allow_train:
 				action_np = RL_agent.select_action(state_gpu)
-				logger.debug(f"[train_online][allow_train] {action_gpu.shape=}")
-				logger.debug(f"[train_online][allow_train] {action_gpu=}")
 			else:
 				action_np = env.action_space.sample()
-				logger.debug(f"[train_online][!allow_train] {action_gpu.shape=}")
-				logger.debug(f"[train_online][!allow_train] {action_gpu=}")
 
 			action_gpu.copy_(torch.from_numpy(action_np))
+			logger.debug(f"[train_online] {action_np.shape=}")
+			logger.debug(f"[train_online] {action_gpu=}")
 
 			next_state_np, reward, terminated, truncated, _ = env.step(action_np)
 			# Reuse pre-allocated tensor instead of creating new one
@@ -248,12 +246,12 @@ def main(args):
 	np.random.seed(args.seed)
 
 	# # CUDA optimizations for speed
-	# if torch.cuda.is_available():
-	# 	torch.backends.cudnn.benchmark = True  # Auto-tune convolution algorithms
-	# 	# Configure precision mode
-	# 	# FP32 precision modes for matmul/conv
-	# 	torch.backends.cudnn.conv.fp32_precision = args.precision
-	# 	torch.backends.cuda.matmul.fp32_precision = args.precision
+	if torch.cuda.is_available():
+		torch.backends.cudnn.benchmark = True  # Auto-tune convolution algorithms
+		# Configure precision mode
+		# FP32 precision modes for matmul/conv
+		torch.backends.cudnn.conv.fp32_precision = args.precision
+		torch.backends.cuda.matmul.fp32_precision = args.precision
 
 	# Get action space info from the single (unwrapped) action space
 	# AsyncVectorEnv has .single_action_space attribute
@@ -374,8 +372,8 @@ if __name__ == "__main__":
 
 	def apply_dynamic_defaults(args):
 		if args.record_freq is None:
-			dynamnic_record_freq = args.max_timesteps // 10 if args.max_timesteps >= 1e6 else np.inf
-			args.record_freq = dynamnic_record_freq
+			dynamic_record_freq = args.max_timesteps // 10 if args.max_timesteps >= 1_000_000 else np.inf
+			args.record_freq = dynamic_record_freq
 
 		if args.profile:
 			logger.info("Profiling enabled - this may slow down training significantly!")
@@ -394,7 +392,6 @@ if __name__ == "__main__":
 
 		return args
 	
-	#main(args)
 	for env in ["HalfCheetah-v5"]:#, "Ant-v5", "Hopper-v5", "ALE/Assault-v5"]:#["ALE/Assault-v5", "HalfCheetah-v5"]:#["ALE/Pong-v5", "ALE/Breakout-v5", "HalfCheetah-v5"]:#["Ant-v5", "Hopper-v5"]:#["HalfCheetah-v5"]:#,  #, , "Humanoid-v5", ]:["Humanoid-v5"]:#
 		for deterministic_actor in [True]:#[False, True]:
 			for encoder in ["td7"]:#, "nflow"]:#, "addition"]:
@@ -407,7 +404,7 @@ if __name__ == "__main__":
 				args = apply_dynamic_defaults(args)
 				profiler_str = "_profiler" if args.profile else ""
 				actor_str = f"DeterministicActor" if args.deterministic_actor else "ProbabilisticActor"
-				args.dir_name = f"ATARIBRANCH_{encoder}_{args.env.replace('/', '_')}_{actor_str}_seed_{args.seed}_{int(args.max_timesteps)}{profiler_str}"
+				args.dir_name = f"test_{encoder}_{args.env.replace('/', '_')}_{actor_str}_seed_{args.seed}_{int(args.max_timesteps)}{profiler_str}"
 
 				main(args)
 				gc.collect()  # Python garbage collection

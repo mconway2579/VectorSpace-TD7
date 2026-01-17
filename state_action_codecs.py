@@ -134,14 +134,14 @@ class NFlowEncoder(nn.Module):
 		zs = self.zs_mlp(backbone_state)
 		zs = AvgL1Norm(zs)
 		return zs
-	
+
 	def za(self, action):
 		# za = self.activ(self.za1(action))
 		# za = self.activ(self.za2(za))
 		# za = AvgL1Norm(self.za3(za))
 		# za = torch.tanh(self.za3(za))
 		return action
-	
+
 	def zsa(self, zs, a):
 		context = torch.cat([zs, a], dim=-1)
 		zsa = self.flow.sample(1, context=context)
@@ -201,11 +201,11 @@ class CNNBackBone(nn.Module):
 
 	def forward(self, x):
 		# x shape: [batch, channels, height, width]
-		x = F.relu(self.conv1(x))
-		x = F.relu(self.conv2(x))
-		x = F.relu(self.conv3(x))
-		x = F.relu(self.conv4(x))
-		x = x.view(x.size(0), -1)  # Flatten
+		x = F.relu(self.conv1(x), inplace=True)
+		x = F.relu(self.conv2(x), inplace=True)
+		x = F.relu(self.conv3(x), inplace=True)
+		x = F.relu(self.conv4(x), inplace=True)
+		x = torch.flatten(x, 1)
 		x = self.fc1(x)
 		x = self.layer_norm(x)
 		x = torch.tanh(x)
@@ -265,9 +265,9 @@ class CNNDecoder(nn.Module):
 		# x shape: [batch, encoder_dim]
 		x = self.fc(x)
 		x = x.view(x.size(0), 32, self.h, self.w)  # Unflatten
-		x = F.relu(self.deconv1(x))
-		x = F.relu(self.deconv2(x))
-		x = F.relu(self.deconv3(x))
+		x = F.relu(self.deconv1(x), inplace=True)
+		x = F.relu(self.deconv2(x), inplace=True)
+		x = F.relu(self.deconv3(x), inplace=True)
 		x = F.sigmoid(self.deconv4(x))  # Sigmoid on final layer for [0,1] output
 		return x
 
