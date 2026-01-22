@@ -96,7 +96,6 @@ def make_env_with_wrappers(env_name, seed=None, render_mode=None, continuous_act
 
 def train_online(RL_agent, env, eval_env, args, writer):
 
-	evals = []
 	start_time = time.time()
 	allow_train = False
 
@@ -139,7 +138,7 @@ def train_online(RL_agent, env, eval_env, args, writer):
 		ep_timesteps = 0
 		total_steps = 0
 		while total_steps < args.max_timesteps:
-			maybe_evaluate_and_print(RL_agent, eval_env, evals, total_steps, start_time, args, writer)
+			maybe_evaluate_and_print(RL_agent, eval_env, total_steps, start_time, args, writer)
 			maybe_record_videos(RL_agent, eval_env, total_steps, args)
 
 			# Get actions for current state
@@ -187,8 +186,6 @@ def train_online(RL_agent, env, eval_env, args, writer):
 				next_state_gpu.copy_(torch.from_numpy(reset_state_np))
 
 			if total_steps >= args.timesteps_before_training:
-				if not allow_train:  # First time training starts
-					logger.info(f"Training started at step {total_steps}")
 				allow_train = True
 
 			# Swap state and next_state tensors to avoid copying
@@ -198,7 +195,7 @@ def train_online(RL_agent, env, eval_env, args, writer):
 			if prof is not None and allow_train:
 				prof.step()
 
-		return evals
+		return
 
 
 def main(args):
@@ -211,7 +208,6 @@ def main(args):
 	if not os.path.exists("./results"):
 		os.makedirs("./results")
 	
-
 	save_dir = os.path.join("./results", args.dir_name)
 	os.makedirs(save_dir, exist_ok=True)
 	args.save_dir = save_dir
@@ -234,7 +230,6 @@ def main(args):
 	# Create training environment
 	env = make_env_with_wrappers(args.env, seed=args.seed, render_mode="rgb_array", continuous_action_threshold=args.continuous_action_threshold)
 
-
 	# Evaluation environment
 	eval_env = make_env_with_wrappers(args.env, seed=args.seed + 100, render_mode="rgb_array", continuous_action_threshold=args.continuous_action_threshold)
 
@@ -245,18 +240,7 @@ def main(args):
 	torch.manual_seed(args.seed)
 	np.random.seed(args.seed)
 
-	# # CUDA optimizations for speed
-	if torch.cuda.is_available():
-		torch.backends.cudnn.benchmark = True  # Auto-tune convolution algorithms
-		# Configure precision mode
-		# FP32 precision modes for matmul/conv
-		torch.backends.cudnn.conv.fp32_precision = args.precision
-		torch.backends.cuda.matmul.fp32_precision = args.precision
-
 	# Get action space info from the single (unwrapped) action space
-	# AsyncVectorEnv has .single_action_space attribute
-	# single_action_space = env.single_action_space
-	# state_dim = env.single_observation_space.shape
 	action_space = env.action_space
 	action_dim = env.action_space.shape[0]
 	state_dim = env.observation_space.shape
@@ -301,7 +285,7 @@ def main(args):
 	logger.info(f"Encoder on GPU: {next(RL_agent.encoder.parameters()).is_cuda}")
 	logger.info(f"Buffer device: {RL_agent.replay_buffer.device}")
 
-	total_reward_samples = train_online(RL_agent, env, eval_env, args, writer)
+	train_online(RL_agent, env, eval_env, args, writer)
 	maybe_record_videos(RL_agent, eval_env, 0, args, extension="_final")
 
 	final_model_save_path = os.path.join(args.model_dir, "final_model.pt")
@@ -318,7 +302,6 @@ def main(args):
 	# Drop references to big objects
 	del RL_agent
 	del env, eval_env
-	del total_reward_samples
 
 
 if __name__ == "__main__":
@@ -327,29 +310,18 @@ if __name__ == "__main__":
 	parser.add_argument("--encoder", type=str, choices=["addition", "td7", "nflow"], default="td7",
 						help="Which encoder to use ('addition', 'td7', or 'nflow').")
 	# RL
-	# parser.add_argument("--env", default="HalfCheetah-v5", type=str)
-	parser.add_argument("--env", default="ALE/Breakout-v5", type=str)
-
-	parser.add_argument("--deterministic_actor", default=True, action=argparse.BooleanOptionalAction)
-	parser.add_argument("--hard_updates", default=False, action=argparse.BooleanOptionalAction,
-						help="Use hard target updates (like reference TD7) instead of soft Polyak averaging")
-
-	
+	parser.add_argument("--env", default="HalfCheetah-v5", type=str)
 	parser.add_argument("--seed", default=0, type=int)
+	parser.add_argument("--deterministic_actor", default=True, action=argparse.BooleanOptionalAction)
+	parser.add_argument("--hard_updates", default=False, action=argparse.BooleanOptionalAction)
 	parser.add_argument('--use_checkpoints', default=True, action=argparse.BooleanOptionalAction)
 
 	# Evaluation
 	parser.add_argument("--timesteps_before_training", default=25e3, type=int)
 	parser.add_argument("--eval_freq", default=5e3, type=int)
-	# parser.add_argument("--eval_freq", default=10e3, type=int)
-
 	parser.add_argument("--eval_eps", default=10, type=int)
-	# parser.add_argument("--max_timesteps", default=5_000_000, type=int)
 	parser.add_argument("--max_timesteps", default=1_000_000, type=int)
-	# parser.add_argument("--max_timesteps", default=100_000, type=int)
-	# parser.add_argument("--max_timesteps", default=35_000, type=int)
 
-	parser.add_argument("--precision", default="tf32", type=str, choices=["tf32", "ieee"], help="Precision mode for FP32 matmul/conv")
 	# Recording
 	parser.add_argument("--record_videos", default=True, action=argparse.BooleanOptionalAction)
 	parser.add_argument("--record_freq", default=None, type=int)
@@ -357,18 +329,18 @@ if __name__ == "__main__":
 
 	# File
 	parser.add_argument('--dir_name', default=None)
-	parser.add_argument("--writer_flush_seconds", default=30, type=int)
+	parser.add_argument("--writer_flush_seconds", default=120, type=int)
 
 	# Logging
 	# parser.add_argument("--log_level", default="DEBUG", type=str, choices=["DEBUG", "INFO", "WARNING", "ERROR"], help="Logging level")
 	parser.add_argument("--log_level", default="INFO", type=str, choices=["DEBUG", "INFO", "WARNING", "ERROR"], help="Logging level")
-
-	# Atari continuous action threshold
-	parser.add_argument("--continuous_action_threshold", default=0.5, type=float, help="Threshold for continuous action space in Atari (0-1). CALE paper uses 0.5.")
+	parser.add_argument("--log_gradients", action="store_true", default=False, help="Enable gradient logging to TensorBoard (causes CPU-GPU sync, reduces performance)")
 
 	# Profiling
 	parser.add_argument("--profile", action="store_true", default=False, help="Enable TensorBoard profiler (profiles steps with schedule)")
-	parser.add_argument("--log_gradients", action="store_true", default=False, help="Enable gradient logging to TensorBoard (causes CPU-GPU sync, reduces performance)")
+
+	# Atari continuous action threshold
+	parser.add_argument("--continuous_action_threshold", default=0.5, type=float, help="Threshold for continuous action space in Atari (0-1). CALE paper uses 0.5.")
 
 	def apply_dynamic_defaults(args):
 		if args.record_freq is None:
@@ -391,28 +363,28 @@ if __name__ == "__main__":
 			args.use_checkpoints = True
 
 		return args
-	
-	for env in ["HalfCheetah-v5"]:#, "Ant-v5", "Hopper-v5", "ALE/Assault-v5"]:#["ALE/Assault-v5", "HalfCheetah-v5"]:#["ALE/Pong-v5", "ALE/Breakout-v5", "HalfCheetah-v5"]:#["Ant-v5", "Hopper-v5"]:#["HalfCheetah-v5"]:#,  #, , "Humanoid-v5", ]:["Humanoid-v5"]:#
-		for deterministic_actor in [True]:#[False, True]:
-			for encoder in ["td7"]:#, "nflow"]:#, "addition"]:
-				args = parser.parse_args()
+	for i in range(10):
+		for env in ["HalfCheetah-v5"]:#, "Ant-v5", "Hopper-v5", "ALE/Assault-v5"]:#["ALE/Assault-v5", "HalfCheetah-v5"]:#["ALE/Pong-v5", "ALE/Breakout-v5", "HalfCheetah-v5"]:#["Ant-v5", "Hopper-v5"]:#["HalfCheetah-v5"]:#,  #, , "Humanoid-v5", ]:["Humanoid-v5"]:#
+			for deterministic_actor in [True]:#[False, True]:
+				for encoder in ["td7"]:#, "nflow"]:#, "addition"]:
+					args = parser.parse_args()
 
-				args.env = env
-				args.encoder = encoder
-				args.deterministic_actor = deterministic_actor
+					args.env = env
+					args.encoder = encoder
+					args.deterministic_actor = deterministic_actor
 
-				args = apply_dynamic_defaults(args)
-				profiler_str = "_profiler" if args.profile else ""
-				actor_str = f"DeterministicActor" if args.deterministic_actor else "ProbabilisticActor"
-				args.dir_name = f"test_{encoder}_{args.env.replace('/', '_')}_{actor_str}_seed_{args.seed}_{int(args.max_timesteps)}{profiler_str}"
+					args = apply_dynamic_defaults(args)
+					profiler_str = "_profiler" if args.profile else ""
+					actor_str = f"DeterministicActor" if args.deterministic_actor else "ProbabilisticActor"
+					args.dir_name = f"nofrills_{i}_test_{encoder}_{args.env.replace('/', '_')}_{actor_str}_seed_{args.seed}_{int(args.max_timesteps)}{profiler_str}"
 
-				main(args)
-				gc.collect()  # Python garbage collection
-				if torch.cuda.is_available():
-					torch.cuda.empty_cache()
-					torch.cuda.ipc_collect()
-				# For MPS (Apple Silicon) if you ever use it:
-				if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-					torch.mps.empty_cache()
+					main(args)
+					gc.collect()  # Python garbage collection
+					if torch.cuda.is_available():
+						torch.cuda.empty_cache()
+						torch.cuda.ipc_collect()
+					# For MPS (Apple Silicon) if you ever use it:
+					if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+						torch.mps.empty_cache()
 
 	

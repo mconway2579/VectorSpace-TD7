@@ -29,7 +29,7 @@ class Agent(object):
 		self.action_dim = action_dim
 		self.writer = writer
 
-		self.loss_record_freq = 100
+		self.loss_record_freq = 1000
 
 		self.args = args
 		self.device = None
@@ -42,9 +42,12 @@ class Agent(object):
 				self.device = torch.device("cpu")
 		except Exception:
 			self.device = torch.device("cpu")
-		
 		logger.info(f"Using device: {self.device}")
 		self.hp = hp
+
+		#######################
+		# BACKBONE
+		#######################
 		self.backbone = None
 		self.backbone_dim = None
 		self.backbone_optimizer = None
@@ -59,6 +62,10 @@ class Agent(object):
 		self.fixed_backbone = copy.deepcopy(self.backbone)
 		self.fixed_backbone_target = copy.deepcopy(self.backbone)
 
+
+		#######################
+		# Encoder
+		#######################
 		self.encoder = None
 		logger.debug(f"{state_dim=}, {action_dim=}, {self.is_image_state=}")
 		if args.encoder == "addition":
@@ -74,6 +81,10 @@ class Agent(object):
 		self.fixed_encoder = copy.deepcopy(self.encoder)
 		self.fixed_encoder_target = copy.deepcopy(self.encoder)
 
+
+		#######################
+		# DECODER
+		#######################
 		self.decoder = None
 		if self.is_image_state:
 			self.decoder = CNNDecoder( hp.encoder_dim, state_dim ).to(self.device)
@@ -83,6 +94,10 @@ class Agent(object):
 		self.fixed_decoder = copy.deepcopy(self.decoder)
 		self.fixed_decoder_target = copy.deepcopy(self.decoder)
 
+
+		#######################
+		# ACTOR
+		#######################
 		self.actor = None
 		if args.deterministic_actor:
 			self.actor = DeterministicActor(self.backbone_dim, self.action_dim, hp.encoder_dim, hp.actor_hdim, hp.actor_activ).to(self.device)
@@ -91,29 +106,50 @@ class Agent(object):
 		self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=hp.actor_lr)
 		self.actor_target = copy.deepcopy(self.actor)
 
+		#######################
+		# CRITIC
+		#######################
 		self.critic = Critic(self.backbone_dim, self.action_dim, hp.encoder_dim, hp.critic_hdim, hp.critic_activ).to(self.device)
 		self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=hp.critic_lr)
 		self.critic_target = copy.deepcopy(self.critic)
 
+
+		#######################
+		# REWARD PREDICTOR
+		#######################
 		self.reward_predictor = RewardPredictor(hp.encoder_dim, self.action_dim, hp.critic_hdim, hp.critic_activ).to(self.device)
 		self.reward_predictor_optimizer = torch.optim.Adam(self.reward_predictor.parameters(), lr=hp.critic_lr)
 
+
+		#######################
+		# CHECKPOINTS
+		#######################
 		self.checkpoint_actor = copy.deepcopy(self.actor)
 		self.checkpoint_encoder = copy.deepcopy(self.encoder)
 		self.checkpoint_decoder = copy.deepcopy(self.decoder)
 		self.checkpoint_reward_predictor = copy.deepcopy(self.reward_predictor)
 		self.backbone_checkpoint = copy.deepcopy(self.backbone)
 
+
+		#######################
+		# REPLAY BUFFER
+		#######################
 		self.replay_buffer = buffer.LAP(state_dim, self.action_dim, self.device, low_action_arr, high_action_arr, hp.buffer_size, hp.batch_size, normalize_actions=True, prioritized=True)
 
+		#######################
+		# ACTION SCALING
+		#######################
 		self.low_action_arr = torch.tensor(low_action_arr, device=self.device, dtype=torch.float32).unsqueeze(0)
 		self.high_action_arr = torch.tensor(high_action_arr, device=self.device, dtype=torch.float32).unsqueeze(0)
 		# Precompute for scaling tanh [-1,1] -> [low, high]: scaled = center + tanh * scale
 		self.action_scale = (self.high_action_arr - self.low_action_arr) / 2.0
 		self.action_center = (self.high_action_arr + self.low_action_arr) / 2.0
 
-		self.training_steps = 0
 
+		#######################
+		# TRAINING ACCOUNTING
+		#######################
+		self.training_steps = 0
 		# Checkpointing tracked values
 		self.eps_since_update = 0
 		self.timesteps_since_update = 0
@@ -176,7 +212,7 @@ class Agent(object):
 
 			if use_exploration and isinstance(self.actor, DeterministicActor):
 				a = a + torch.randn_like(a) * self.hp.exploration_noise
-			a = a.clamp(-1, 1) #action should already be in [-1, 1] due to tanh
+				a = a.clamp(-1, 1) #action should already be in [-1, 1] due to tanh but noise was added
 
 			# Clamp to [-1, 1] then scale to [low, high] per dimension
 			# scaled = center + tanh * scale
@@ -214,8 +250,6 @@ class Agent(object):
 		return encoder_loss
 	
 	def get_decoder_loss(self, state, next_state, fixed_zs, fixed_zsa):
-		# Use pre-computed values if provided, otherwise compute them
-
 		state_pred = self.decoder(fixed_zs)
 		next_state_pred = self.decoder(fixed_zsa)
 		reconstruction_loss = F.mse_loss(state_pred, state) + F.mse_loss(next_state_pred, next_state)
@@ -228,7 +262,6 @@ class Agent(object):
 		return decoder_loss
 	
 	def get_actor_loss(self, backbone_state, fixed_zs):
-		# Use pre-computed value if provided, otherwise compute it
 		a = self.actor(backbone_state, fixed_zs)
 		fixed_zsa = self.fixed_encoder.zsa(fixed_zs, a)
 		Q = self.critic(backbone_state, a, fixed_zsa, fixed_zs)
@@ -236,7 +269,6 @@ class Agent(object):
 		actor_loss = -Q.mean()
 
 		if self.training_steps % self.loss_record_freq == 0 and self.writer is not None:
-			# self.loss_histories["actor_loss"].append((self.training_steps, float(actor_loss.detach().cpu().item())))
 			step = self.training_steps
 			self.writer.add_scalar("loss/actor/total_loss", actor_loss.item(), step)
 		return actor_loss
@@ -267,17 +299,12 @@ class Agent(object):
 			self.min = min(self.min, float(Q_target.min()))
 
 		Q = self.critic(backbone_state, env_action, fixed_zsa, fixed_zs)
-		# print(f"{Q.shape=}")
 		td_loss = (Q - Q_target).abs()
-		# print(f"{td_loss.shape=}")
 		critic_loss = LAP_huber(td_loss)
 		self.update_lap(td_loss)
 
-		# print(f"{critic_loss.shape=}")
 
 		if self.training_steps % self.loss_record_freq == 0 and self.writer is not None:
-			# self.loss_histories["critic_td_loss"].append((self.training_steps, float(td_loss.mean().detach().cpu().item())))
-			# self.loss_histories["critic_loss"].append((self.training_steps, float(critic_loss.detach().cpu().item())))
 			step = self.training_steps
 			self.writer.add_scalar("loss/critic/td_loss", td_loss.mean().item(), step)
 			self.writer.add_scalar("loss/critic/total_loss", critic_loss.item(), step)
@@ -348,7 +375,7 @@ class Agent(object):
 		encoder_loss = self.get_encoder_loss(backbone_state, env_action, backbone_next_state)
 		self.encoder_optimizer.zero_grad(set_to_none=False)
 		encoder_loss.backward(retain_graph=self.is_image_state)
-		if self.training_steps % self.loss_record_freq == 0:
+		if self.training_steps % self.loss_record_freq == 0 and self.args.log_gradients:
 			self._log_gradients(self.encoder, "encoder")
 		self.encoder_optimizer.step()
 
@@ -358,7 +385,7 @@ class Agent(object):
 		critic_loss = self.get_critic_loss(backbone_state, env_action, backbone_next_state, reward, not_done, fixed_zs, fixed_zsa, fixed_target_zs)
 		self.critic_optimizer.zero_grad(set_to_none=False)
 		critic_loss.backward(retain_graph=self.is_image_state)
-		if self.training_steps % self.loss_record_freq == 0:
+		if self.training_steps % self.loss_record_freq == 0  and self.args.log_gradients:
 			self._log_gradients(self.critic, "critic")
 		self.critic_optimizer.step()
 
@@ -369,7 +396,7 @@ class Agent(object):
 			actor_loss = self.get_actor_loss(backbone_state, fixed_zs)
 			self.actor_optimizer.zero_grad(set_to_none=False)
 			actor_loss.backward()
-			if self.training_steps % self.loss_record_freq == 0:
+			if self.training_steps % self.loss_record_freq == 0 and self.args.log_gradients:
 				self._log_gradients(self.actor, "actor")
 			self.actor_optimizer.step()
 
@@ -377,28 +404,28 @@ class Agent(object):
 		# Update Backbone
 		#########################
 		if self.backbone_optimizer is not None:
-			if self.training_steps % self.loss_record_freq == 0:
+			if self.training_steps % self.loss_record_freq == 0 and self.args.log_gradients:
 				self._log_gradients(self.backbone, "backbone")
 			self.backbone_optimizer.step()
 			self.backbone_optimizer.zero_grad(set_to_none=False)
 
 
-		#########################
-		# Update Decoder & reward_predictor in one backward pass
-		#########################
-		decoder_loss = self.get_decoder_loss(state, next_state, fixed_zs, fixed_zsa)
-		reward_predictor_loss = self.get_reward_predictor_loss(env_action, reward, fixed_zs, fixed_zsa)
-		acc_loss = decoder_loss + reward_predictor_loss
-		self.reward_predictor_optimizer.zero_grad(set_to_none=False)
-		self.decoder_optimizer.zero_grad(set_to_none=False)
-		acc_loss.backward()
+		# #########################
+		# # Update Decoder & reward_predictor in one backward pass
+		# #########################
+		# decoder_loss = self.get_decoder_loss(state, next_state, fixed_zs, fixed_zsa)
+		# reward_predictor_loss = self.get_reward_predictor_loss(env_action, reward, fixed_zs, fixed_zsa)
+		# acc_loss = decoder_loss + reward_predictor_loss
+		# self.reward_predictor_optimizer.zero_grad(set_to_none=False)
+		# self.decoder_optimizer.zero_grad(set_to_none=False)
+		# acc_loss.backward()
 
-		if self.training_steps % self.loss_record_freq == 0:
-			self._log_gradients(self.reward_predictor, "reward_predictor")
-			self._log_gradients(self.decoder, "decoder")
+		# if self.training_steps % self.loss_record_freq == 0 and self.args.log_gradients:
+		# 	self._log_gradients(self.reward_predictor, "reward_predictor")
+		# 	self._log_gradients(self.decoder, "decoder")
 
-		self.reward_predictor_optimizer.step()
-		self.decoder_optimizer.step()
+		# self.reward_predictor_optimizer.step()
+		# self.decoder_optimizer.step()
 
 
 		#########################
