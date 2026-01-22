@@ -40,7 +40,7 @@ def maybe_record_videos(RL_agent, eval_env, t, args, extension=""):
             logger.info(f"[maybe_record_videos] Saved video to {video_path}")
 
 
-def maybe_evaluate_and_print(RL_agent, eval_env, evals, t, start_time, args, writer):
+def maybe_evaluate_and_print(RL_agent, eval_env, t, start_time, args, writer):
 	if t % args.eval_freq == 0:
 		logger.info("---------------------------------------")
 		logger.info(f"Evaluation at {t} time steps")
@@ -68,8 +68,6 @@ def maybe_evaluate_and_print(RL_agent, eval_env, evals, t, start_time, args, wri
 
 		logger.info(f"Average total reward over {args.eval_eps} episodes: {total_reward.mean():.3f}")
 		logger.info("---------------------------------------")
-		evals.append(total_reward)
-		np.save(f"{args.save_dir}/evals.npy", evals)
 
 		writer.add_scalar("eval/mean_reward", total_reward.mean(), t)
 		writer.add_scalar("eval/std_reward", total_reward.std(), t)
