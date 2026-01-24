@@ -3,6 +3,7 @@ import torch
 from dataclasses import dataclass
 from typing import Callable
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 def AvgL1Norm(x, eps=1e-8):
@@ -30,7 +31,6 @@ class Hyperparameters:
 	discount: float = 0.99
 	target_update_rate: int = 250
 	exploration_noise: float = 0.1
-	gradient_clip: float = 10.0
 	
 	# TD3
 	target_policy_noise: float = 0.2
@@ -52,7 +52,7 @@ class Hyperparameters:
 	# Encoder Model
 	encoder_dim: int = 256
 	enc_hdim: int = 256
-	enc_activ: Callable = nn.ELU
+	enc_activ: Callable = F.elu
 	encoder_lr: float = 3e-4
 	log_loss_weight: float = 1.0
 	prediction_loss_lambda: float = 1.0
@@ -63,18 +63,18 @@ class Hyperparameters:
 
 	# Decoder Model
 	decoder_hdim: int = 256
-	decoder_activ: Callable = nn.ELU
+	decoder_activ: Callable = F.elu
 	decoder_bc_lambda: float = 1.0
 	decoder_q_lambda: float = 1.0
 	decoder_lr: float = 3e-4
 
 	# Critic Model
 	critic_hdim: int = 256
-	critic_activ: Callable = nn.ELU
+	critic_activ: Callable = F.elu
 	critic_lr: float = 3e-4
 	
 	# Actor Model
 	actor_hdim: int = 256
-	actor_activ: Callable = nn.ReLU
+	actor_activ: Callable = F.relu
 	actor_lr: float = 3e-4
 

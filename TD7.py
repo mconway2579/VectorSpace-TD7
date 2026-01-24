@@ -29,7 +29,7 @@ class Agent(object):
 		self.action_dim = action_dim
 		self.writer = writer
 
-		self.loss_record_freq = 1000
+		self.loss_record_freq = 10_000
 
 		self.args = args
 		self.device = None
@@ -62,39 +62,6 @@ class Agent(object):
 		self.fixed_backbone = copy.deepcopy(self.backbone)
 		self.fixed_backbone_target = copy.deepcopy(self.backbone)
 
-
-		#######################
-		# Encoder
-		#######################
-		self.encoder = None
-		logger.debug(f"{state_dim=}, {action_dim=}, {self.is_image_state=}")
-		if args.encoder == "addition":
-			self.encoder = AdditionEncoder(self.backbone_dim, action_dim, hp.encoder_dim, hp.enc_hdim, hp.enc_activ).to(self.device)
-		elif args.encoder == "nflow":
-			self.encoder = NFlowEncoder(self.backbone_dim, action_dim, hp.encoder_dim, hp.enc_hdim, hp.enc_activ).to(self.device)
-		elif args.encoder == "td7":
-			self.encoder = TD7Encoder(self.backbone_dim, action_dim, hp.encoder_dim, hp.enc_hdim, hp.enc_activ).to(self.device)
-		else:
-			raise ValueError(f"Unknown encoder type: {args.encoder}")
-
-		self.encoder_optimizer = torch.optim.Adam(self.encoder.parameters(), lr=hp.encoder_lr)
-		self.fixed_encoder = copy.deepcopy(self.encoder)
-		self.fixed_encoder_target = copy.deepcopy(self.encoder)
-
-
-		#######################
-		# DECODER
-		#######################
-		self.decoder = None
-		if self.is_image_state:
-			self.decoder = CNNDecoder( hp.encoder_dim, state_dim ).to(self.device)
-		else:
-			self.decoder = MLPDecoder(state_dim, hp.encoder_dim, hp.decoder_hdim, hp.decoder_activ).to(self.device)
-		self.decoder_optimizer = torch.optim.Adam(self.decoder.parameters(), lr=hp.decoder_lr)
-		self.fixed_decoder = copy.deepcopy(self.decoder)
-		self.fixed_decoder_target = copy.deepcopy(self.decoder)
-
-
 		#######################
 		# ACTOR
 		#######################
@@ -115,10 +82,42 @@ class Agent(object):
 
 
 		#######################
-		# REWARD PREDICTOR
+		# Encoder
 		#######################
-		self.reward_predictor = RewardPredictor(hp.encoder_dim, self.action_dim, hp.critic_hdim, hp.critic_activ).to(self.device)
-		self.reward_predictor_optimizer = torch.optim.Adam(self.reward_predictor.parameters(), lr=hp.critic_lr)
+		self.encoder = None
+		# logger.debug(f"{state_dim=}, {action_dim=}, {self.is_image_state=}")
+		if args.encoder == "addition":
+			self.encoder = AdditionEncoder(self.backbone_dim, action_dim, hp.encoder_dim, hp.enc_hdim, hp.enc_activ).to(self.device)
+		elif args.encoder == "nflow":
+			self.encoder = NFlowEncoder(self.backbone_dim, action_dim, hp.encoder_dim, hp.enc_hdim, hp.enc_activ).to(self.device)
+		elif args.encoder == "td7":
+			self.encoder = TD7Encoder(self.backbone_dim, action_dim, hp.encoder_dim, hp.enc_hdim, hp.enc_activ).to(self.device)
+		else:
+			raise ValueError(f"Unknown encoder type: {args.encoder}")
+		self.encoder_optimizer = torch.optim.Adam(self.encoder.parameters(), lr=hp.encoder_lr)
+		self.fixed_encoder = copy.deepcopy(self.encoder)
+		self.fixed_encoder_target = copy.deepcopy(self.encoder)
+
+
+		# #######################
+		# # DECODER
+		# #######################
+		# self.decoder = None
+		# if self.is_image_state:
+		# 	self.decoder = CNNDecoder( hp.encoder_dim, state_dim ).to(self.device)
+		# else:
+		# 	self.decoder = MLPDecoder(state_dim, hp.encoder_dim, hp.decoder_hdim, hp.decoder_activ).to(self.device)
+		# self.decoder_optimizer = torch.optim.Adam(self.decoder.parameters(), lr=hp.decoder_lr)
+		# self.fixed_decoder = copy.deepcopy(self.decoder)
+		# self.fixed_decoder_target = copy.deepcopy(self.decoder)
+
+
+
+		# #######################
+		# # REWARD PREDICTOR
+		# #######################
+		# self.reward_predictor = RewardPredictor(hp.encoder_dim, self.action_dim, hp.critic_hdim, hp.critic_activ).to(self.device)
+		# self.reward_predictor_optimizer = torch.optim.Adam(self.reward_predictor.parameters(), lr=hp.critic_lr)
 
 
 		#######################
@@ -126,9 +125,8 @@ class Agent(object):
 		#######################
 		self.checkpoint_actor = copy.deepcopy(self.actor)
 		self.checkpoint_encoder = copy.deepcopy(self.encoder)
-		self.checkpoint_decoder = copy.deepcopy(self.decoder)
-		self.checkpoint_reward_predictor = copy.deepcopy(self.reward_predictor)
 		self.backbone_checkpoint = copy.deepcopy(self.backbone)
+		self.checkpoint_critic = copy.deepcopy(self.critic)
 
 
 		#######################
@@ -166,17 +164,19 @@ class Agent(object):
 		logger.info("#"*20)
 		logger.info("Initialized TD7 Agent")
 		logger.info(f"Encoder: {self.encoder}")
-		logger.info(f"Decoder: {self.decoder}")
+		# logger.info(f"Decoder: {self.decoder}")
 		logger.info(f"Critic: {self.critic}")
 		logger.info(f"Actor: {self.actor}")
-		logger.info(f"Reward Predictor: {self.reward_predictor}")
+		# logger.info(f"Reward Predictor: {self.reward_predictor}")
 		logger.info(f"Backbone: {self.backbone}")
 		logger.info(f"{self.args.hard_updates=}")
 		logger.info("#"*20)
 
 	def select_action(self, state, use_checkpoint=False, use_exploration=True):
 		# print(f"[select_action] {state.shape=}, {use_checkpoint=}, {use_exploration=}")
-		logger.debug(f"select_action input: {state.shape=}")
+		# logger.debug(f"select_action input: {state.shape=}")
+		if isinstance(state, np.ndarray):
+			state = torch.from_numpy(state).float().to(self.device)
 		with torch.no_grad():
 			# Handle both single and batched inputs
 			# Single: (C, H, W) or (state_dim,) -> add batch dim
@@ -196,19 +196,18 @@ class Agent(object):
 			else:
 				raise ValueError(f"[select_action] not sure what happened here {self.is_image_state=}, {state.shape=}")
 
-			batch_size = state.shape[0]
-
-			backbone_state = self.backbone(state)
-			logger.debug(f"backbone_state: {backbone_state.shape=}")
+			# logger.debug(f"backbone_state: {backbone_state.shape=}")
 
 			a = None
 			if use_checkpoint:
+				backbone_state = self.backbone_checkpoint(state)
 				zs = self.checkpoint_encoder.zs(backbone_state)
 				a = self.checkpoint_actor(backbone_state, zs)
 			else:
+				backbone_state = self.fixed_backbone(state)
 				zs = self.fixed_encoder.zs(backbone_state)
 				a = self.actor(backbone_state, zs)
-			logger.debug(f"actor output: {a.shape=}, {zs.shape=}")
+			# logger.debug(f"actor output: {a.shape=}, {zs.shape=}")
 
 			if use_exploration and isinstance(self.actor, DeterministicActor):
 				a = a + torch.randn_like(a) * self.hp.exploration_noise
@@ -217,9 +216,9 @@ class Agent(object):
 			# Clamp to [-1, 1] then scale to [low, high] per dimension
 			# scaled = center + tanh * scale
 			actions = (self.action_center + a * self.action_scale).cpu().data.numpy()
-			logger.debug(f"final action: {actions.shape=}")
+			# logger.debug(f"final action: {actions.shape=}")
 			# Flatten if single action, otherwise return batch
-			return actions.flatten() if batch_size == 1 else actions
+			return actions.flatten()# if batch_size == 1 else actions
 
 	def get_encoder_loss(self, backbone_state, env_action, backbone_next_state):
 		with torch.no_grad():
@@ -273,23 +272,21 @@ class Agent(object):
 			self.writer.add_scalar("loss/actor/total_loss", actor_loss.item(), step)
 		return actor_loss
 	
-	def update_lap(self, td_loss):
-		priority = td_loss.max(1)[0].clamp(min=self.hp.min_priority).pow(self.hp.alpha)
-		self.replay_buffer.update_priority(priority)
+		
 
-	def get_critic_loss(self, backbone_state, env_action, backbone_next_state, reward, not_done, fixed_zs, fixed_zsa, fixed_target_zs):
-		# Use pre-computed values if provided, otherwise compute them
+	def get_critic_loss(self, backbone_state, env_action, fixed_backbone_target_next_state, reward, not_done, fixed_zs, fixed_zsa, fixed_target_zs):
 		Q_target = None
 		with torch.no_grad():
 
-			next_action = self.actor_target(backbone_next_state, fixed_target_zs) #actor_out at t+1
+			next_action = self.actor_target(fixed_backbone_target_next_state, fixed_target_zs) #actor_out at t+1
 
 			noise = (torch.randn_like(next_action) * self.hp.target_policy_noise).clamp(-self.hp.noise_clip, self.hp.noise_clip)
+			#TODO CHECK CLAMP WHEN USING CONT ATARI ACTIONS
 			next_action = (next_action + noise).clamp(-1,1) #noised action at t+1
 
 			fixed_target_zsa = self.fixed_encoder_target.zsa(fixed_target_zs, next_action) #zs at t+2
 
-			Q_target = self.critic_target(backbone_next_state, next_action, fixed_target_zsa, fixed_target_zs) #q for t+1 to t+2
+			Q_target = self.critic_target(fixed_backbone_target_next_state, next_action, fixed_target_zsa, fixed_target_zs) #q for t+1 to t+2
 			# print(f"{Q_target.shape=}")
 			min_Q_target = Q_target.min(1,keepdim=True)[0]
 			# print(f"{min_Q_target.shape=}")
@@ -298,10 +295,13 @@ class Agent(object):
 			self.max = max(self.max, float(Q_target.max()))
 			self.min = min(self.min, float(Q_target.min()))
 
+		
+		#TODO CHECK THE SCALE OF ENV_ACTION
 		Q = self.critic(backbone_state, env_action, fixed_zsa, fixed_zs)
 		td_loss = (Q - Q_target).abs()
 		critic_loss = LAP_huber(td_loss)
-		self.update_lap(td_loss)
+		priority = td_loss.max(1)[0].clamp(min=self.hp.min_priority).pow(self.hp.alpha)
+		self.replay_buffer.update_priority(priority)
 
 
 		if self.training_steps % self.loss_record_freq == 0 and self.writer is not None:
@@ -328,8 +328,8 @@ class Agent(object):
 			(self.critic_target, self.critic),
 			(self.fixed_encoder_target, self.fixed_encoder),
 			(self.fixed_encoder, self.encoder),
-			(self.fixed_decoder_target, self.fixed_decoder),
-			(self.fixed_decoder, self.decoder),
+			# (self.fixed_decoder_target, self.fixed_decoder),
+			# (self.fixed_decoder, self.decoder),
 		]
 		for target, source in target_source:
 			for target_param, source_param in zip(target.parameters(), source.parameters()):
@@ -339,8 +339,8 @@ class Agent(object):
 		self.critic_target.load_state_dict(self.critic.state_dict())
 		self.fixed_encoder_target.load_state_dict(self.fixed_encoder.state_dict())
 		self.fixed_encoder.load_state_dict(self.encoder.state_dict())
-		self.fixed_decoder_target.load_state_dict(self.fixed_decoder.state_dict())
-		self.fixed_decoder.load_state_dict(self.decoder.state_dict())
+		# self.fixed_decoder_target.load_state_dict(self.fixed_decoder.state_dict())
+		# self.fixed_decoder.load_state_dict(self.decoder.state_dict())
 		self.fixed_backbone_target.load_state_dict(self.fixed_backbone.state_dict())
 		self.fixed_backbone.load_state_dict(self.backbone.state_dict())
 	def train(self):
@@ -382,7 +382,7 @@ class Agent(object):
 		#########################
 		# Update Critic
 		#########################
-		critic_loss = self.get_critic_loss(backbone_state, env_action, backbone_next_state, reward, not_done, fixed_zs, fixed_zsa, fixed_target_zs)
+		critic_loss = self.get_critic_loss(backbone_state, env_action, fixed_backbone_target_next_state, reward, not_done, fixed_zs, fixed_zsa, fixed_target_zs)
 		self.critic_optimizer.zero_grad(set_to_none=False)
 		critic_loss.backward(retain_graph=self.is_image_state)
 		if self.training_steps % self.loss_record_freq == 0  and self.args.log_gradients:
@@ -434,11 +434,11 @@ class Agent(object):
 		if not self.args.hard_updates:
 			self.soft_update_targets()
 		if self.training_steps % self.hp.target_update_rate == 0:
+			if self.args.hard_updates:
+				self.hard_update_targets()
 			self.replay_buffer.reset_max_priority()
 			self.max_target = self.max
 			self.min_target = self.min
-			if self.args.hard_updates:
-				self.hard_update_targets()
 				
 
 			
@@ -460,8 +460,9 @@ class Agent(object):
 			self.backbone_checkpoint.load_state_dict(self.backbone.state_dict())
 			self.checkpoint_actor.load_state_dict(self.actor.state_dict())
 			self.checkpoint_encoder.load_state_dict(self.fixed_encoder.state_dict())
-			self.checkpoint_decoder.load_state_dict(self.fixed_decoder.state_dict())
-			self.checkpoint_reward_predictor.load_state_dict(self.reward_predictor.state_dict())
+			self.checkpoint_critic.load_state_dict(self.critic.state_dict())
+			# self.checkpoint_decoder.load_state_dict(self.fixed_decoder.state_dict())
+			# self.checkpoint_reward_predictor.load_state_dict(self.reward_predictor.state_dict())
 			self.train_and_reset()
 
 
@@ -507,11 +508,11 @@ class Agent(object):
 			"fixed_encoder": self.fixed_encoder.state_dict(),
 			"fixed_encoder_target": self.fixed_encoder_target.state_dict(),
 
-			"decoder": self.decoder.state_dict(),
-			"fixed_decoder": self.fixed_decoder.state_dict(),
-			"fixed_decoder_target": self.fixed_decoder_target.state_dict(),
+			# "decoder": self.decoder.state_dict(),
+			# "fixed_decoder": self.fixed_decoder.state_dict(),
+			# "fixed_decoder_target": self.fixed_decoder_target.state_dict(),
 
-			"reward_predictor": self.reward_predictor.state_dict(),
+			# "reward_predictor": self.reward_predictor.state_dict(),
 
 
 			"actor": self.actor.state_dict(),
@@ -520,8 +521,9 @@ class Agent(object):
 			"backbone_checkpoint": self.backbone_checkpoint.state_dict(),
 			"checkpoint_actor": self.checkpoint_actor.state_dict(),
 			"checkpoint_encoder": self.checkpoint_encoder.state_dict(),
-			"checkpoint_decoder": self.checkpoint_decoder.state_dict(),
-			"checkpoint_reward_predictor": self.checkpoint_reward_predictor.state_dict(),
+			"checkpoint_critic": self.checkpoint_critic.state_dict(),
+			# "checkpoint_decoder": self.checkpoint_decoder.state_dict(),
+			# "checkpoint_reward_predictor": self.checkpoint_reward_predictor.state_dict(),
 
 			# Training state (optional but useful)
 			"training_steps": self.training_steps,
@@ -590,9 +592,9 @@ class Agent(object):
 		agent.fixed_encoder.load_state_dict(checkpoint["fixed_encoder"])
 		agent.fixed_encoder_target.load_state_dict(checkpoint["fixed_encoder_target"])
 
-		agent.decoder.load_state_dict(checkpoint["decoder"])
-		agent.fixed_decoder.load_state_dict(checkpoint["fixed_decoder"])
-		agent.fixed_decoder_target.load_state_dict(checkpoint["fixed_decoder_target"])
+		# agent.decoder.load_state_dict(checkpoint["decoder"])
+		# agent.fixed_decoder.load_state_dict(checkpoint["fixed_decoder"])
+		# agent.fixed_decoder_target.load_state_dict(checkpoint["fixed_decoder_target"])
 
 		agent.actor.load_state_dict(checkpoint["actor"])
 		agent.actor_target.load_state_dict(checkpoint["actor_target"])
@@ -602,9 +604,10 @@ class Agent(object):
 
 		agent.backbone_checkpoint.load_state_dict(checkpoint["backbone_checkpoint"])
 		agent.checkpoint_actor.load_state_dict(checkpoint["checkpoint_actor"])
+		agent.checkpoint_critic.load_state_dict(checkpoint["checkpoint_critic"])
 		agent.checkpoint_encoder.load_state_dict(checkpoint["checkpoint_encoder"])
-		agent.checkpoint_decoder.load_state_dict(checkpoint["checkpoint_decoder"])
-		agent.checkpoint_reward_predictor.load_state_dict(checkpoint["checkpoint_reward_predictor"])
+		# agent.checkpoint_decoder.load_state_dict(checkpoint["checkpoint_decoder"])
+		# agent.checkpoint_reward_predictor.load_state_dict(checkpoint["checkpoint_reward_predictor"])
 
 		# Training state (if present)
 		agent.training_steps = checkpoint.get("training_steps", 0)
@@ -643,9 +646,9 @@ class Agent(object):
 		self.fixed_encoder.to(device)
 		self.fixed_encoder_target.to(device)
 
-		self.decoder.to(device)
-		self.fixed_decoder.to(device)
-		self.fixed_decoder_target.to(device)
+		# self.decoder.to(device)
+		# self.fixed_decoder.to(device)
+		# self.fixed_decoder_target.to(device)
 
 		self.actor.to(device)
 		self.actor_target.to(device)
@@ -653,13 +656,12 @@ class Agent(object):
 		self.critic.to(device)
 		self.critic_target.to(device)
 
-		self.reward_predictor.to(device)
+		# self.reward_predictor.to(device)
 		
 
 		self.checkpoint_actor.to(device)
+		self.checkpoint_critic.to(device)
 		self.checkpoint_encoder.to(device)
-		self.checkpoint_decoder.to(device)
-		self.checkpoint_reward_predictor.to(device)
 		self.backbone_checkpoint.to(device)
 
 		# Update replay buffer device

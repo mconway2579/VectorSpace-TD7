@@ -18,41 +18,35 @@ import torch.nn.functional as F
 from utils import AvgL1Norm
 
 class TD7Encoder(nn.Module):
-	def __init__(self, s_backbone_dim, action_dim, encoder_dim=256, hdim=256, activ=nn.ELU):
+	def __init__(self, s_backbone_dim, action_dim, encoder_dim=256, hdim=256, activ=F.elu):
 		super(TD7Encoder, self).__init__()
 
-		self.activ = activ()
+		self.activ = activ
 
 		# state encoder
-		self.zs_mlp = nn.Sequential(
-			nn.Linear(s_backbone_dim, hdim),
-			activ(),
-			nn.Linear(hdim, hdim),
-			activ(),
-			nn.Linear(hdim, encoder_dim)
-		)
-
+		self.zs1 = nn.Linear(s_backbone_dim, hdim)
+		self.zs2 = nn.Linear(hdim, hdim)
+		self.zs3 = nn.Linear(hdim, encoder_dim)
 		# state-action encoder (encoder_dim + action_dim input)
-		self.zsa_mlp = nn.Sequential(
-			nn.Linear(encoder_dim + action_dim, hdim),
-			activ(),
-			nn.Linear(hdim, hdim),
-			activ(),
-			nn.Linear(hdim, encoder_dim)
-		)
+		self.zsa1 = nn.Linear(encoder_dim + action_dim, hdim)
+		self.zsa2 = nn.Linear(hdim, hdim)
+		self.zsa3 = nn.Linear(hdim, encoder_dim)
 
 	def zs(self, backbone_state):
-		zs = self.zs_mlp(backbone_state)
-		zs = AvgL1Norm(zs)
+		zs = self.activ(self.zs1(backbone_state))
+		zs = self.activ(self.zs2(zs))
+		zs = AvgL1Norm(self.zs3(zs))
 		return zs
 
 	def za(self, action):
 		return action
 
 	def zsa(self, zs, a):
-		context = torch.cat([zs, a], 1)
-		zsa = self.zsa_mlp(context)
+		zsa = self.activ(self.zsa1(torch.cat([zs, a], 1)))
+		zsa = self.activ(self.zsa2(zsa))
+		zsa = self.zsa3(zsa)
 		return zsa
+
 	
 	
 class AdditionEncoder(nn.Module):
