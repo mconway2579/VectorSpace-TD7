@@ -123,39 +123,25 @@ def train_online(RL_agent, env, eval_env, args, writer):
 	logger.info(f"Starting training with profiler {profiler_ctx}")
 	with profiler_ctx as prof:
 		# Initialize state and episode tracking
-		state_np, info = env.reset(seed=args.seed)
-		# Pre-allocate GPU tensors to avoid repeated CPU->GPU copies
-		state_gpu = torch.empty(state_np.shape, dtype=torch.float32, device=RL_agent.device)
-		action_gpu = torch.empty((env.action_space.shape[0],), dtype=torch.float32, device=RL_agent.device)
-		reward_gpu = torch.empty((1,), dtype=torch.float32, device=RL_agent.device)
-		next_state_gpu = torch.empty_like(state_gpu)
+		state, info = env.reset(seed=args.seed)
 
-		state_gpu.copy_(torch.from_numpy(state_np))
-		logger.debug(f"[train_online] {state_gpu.shape=}")
+		logger.debug(f"[train_online] {state.shape=}")
 
 		ep_num = 0
 		ep_reward = 0
 		ep_timesteps = 0
 		total_steps = 0
-		while total_steps < args.max_timesteps:
+		while total_steps < args.max_timesteps+1:
 			maybe_evaluate_and_print(RL_agent, eval_env, total_steps, start_time, args, writer)
 			maybe_record_videos(RL_agent, eval_env, total_steps, args)
 
 			# Get actions for current state
 			if allow_train:
-				action_np = RL_agent.select_action(state_gpu)
+				action = RL_agent.select_action(state)
 			else:
-				action_np = env.action_space.sample()
+				action = env.action_space.sample()
 
-			action_gpu.copy_(torch.from_numpy(action_np))
-			logger.debug(f"[train_online] {action_np.shape=}")
-			logger.debug(f"[train_online] {action_gpu=}")
-
-			next_state_np, reward, terminated, truncated, _ = env.step(action_np)
-			# Reuse pre-allocated tensor instead of creating new one
-			reward_gpu.fill_(reward)
-			next_state_gpu.copy_(torch.from_numpy(next_state_np))
-			# print(f"[train_online] {next_states.shape=}")
+			next_state, reward, terminated, truncated, _ = env.step(action)
 			done = terminated | truncated
 
 			# Update episode tracking
@@ -164,7 +150,9 @@ def train_online(RL_agent, env, eval_env, args, writer):
 			total_steps += 1
 
 			# Add transitions to replay buffer
-			RL_agent.replay_buffer.add(state_gpu, action_gpu, next_state_gpu, reward_gpu, done)
+			RL_agent.replay_buffer.add(state, action, next_state, reward, done)
+
+			state = next_state
 
 			# Train after each step (for non-checkpoint mode)
 			if allow_train and not args.use_checkpoints:
@@ -182,14 +170,10 @@ def train_online(RL_agent, env, eval_env, args, writer):
 
 				ep_timesteps = 0
 				ep_reward = 0
-				reset_state_np, info = env.reset()
-				next_state_gpu.copy_(torch.from_numpy(reset_state_np))
+				state, info = env.reset()
 
 			if total_steps >= args.timesteps_before_training:
 				allow_train = True
-
-			# Swap state and next_state tensors to avoid copying
-			state_gpu, next_state_gpu = next_state_gpu, state_gpu
 
 			# Step profiler if enabled (only after training begins)
 			if prof is not None and allow_train:
@@ -313,7 +297,7 @@ if __name__ == "__main__":
 	parser.add_argument("--env", default="HalfCheetah-v5", type=str)
 	parser.add_argument("--seed", default=0, type=int)
 	parser.add_argument("--deterministic_actor", default=True, action=argparse.BooleanOptionalAction)
-	parser.add_argument("--hard_updates", default=False, action=argparse.BooleanOptionalAction)
+	parser.add_argument("--hard_updates", default=True, action=argparse.BooleanOptionalAction)
 	parser.add_argument('--use_checkpoints', default=True, action=argparse.BooleanOptionalAction)
 
 	# Evaluation
@@ -363,7 +347,7 @@ if __name__ == "__main__":
 			args.use_checkpoints = True
 
 		return args
-	for i in range(10):
+	for i in range(5):
 		for env in ["HalfCheetah-v5"]:#, "Ant-v5", "Hopper-v5", "ALE/Assault-v5"]:#["ALE/Assault-v5", "HalfCheetah-v5"]:#["ALE/Pong-v5", "ALE/Breakout-v5", "HalfCheetah-v5"]:#["Ant-v5", "Hopper-v5"]:#["HalfCheetah-v5"]:#,  #, , "Humanoid-v5", ]:["Humanoid-v5"]:#
 			for deterministic_actor in [True]:#[False, True]:
 				for encoder in ["td7"]:#, "nflow"]:#, "addition"]:
@@ -376,7 +360,7 @@ if __name__ == "__main__":
 					args = apply_dynamic_defaults(args)
 					profiler_str = "_profiler" if args.profile else ""
 					actor_str = f"DeterministicActor" if args.deterministic_actor else "ProbabilisticActor"
-					args.dir_name = f"nofrills_{i}_test_{encoder}_{args.env.replace('/', '_')}_{actor_str}_seed_{args.seed}_{int(args.max_timesteps)}{profiler_str}"
+					args.dir_name = f"hardupdates_{i}_test_{encoder}_{args.env.replace('/', '_')}_{actor_str}_seed_{args.seed}_{int(args.max_timesteps)}{profiler_str}"
 
 					main(args)
 					gc.collect()  # Python garbage collection
