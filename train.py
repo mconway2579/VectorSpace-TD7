@@ -297,14 +297,14 @@ if __name__ == "__main__":
 	parser.add_argument("--env", default="HalfCheetah-v5", type=str)
 	parser.add_argument("--seed", default=0, type=int)
 	parser.add_argument("--deterministic_actor", default=True, action=argparse.BooleanOptionalAction)
-	parser.add_argument("--hard_updates", default=True, action=argparse.BooleanOptionalAction)
+	parser.add_argument("--hard_updates", default=False, action=argparse.BooleanOptionalAction)
 	parser.add_argument('--use_checkpoints', default=True, action=argparse.BooleanOptionalAction)
 
 	# Evaluation
 	parser.add_argument("--timesteps_before_training", default=25e3, type=int)
 	parser.add_argument("--eval_freq", default=5e3, type=int)
 	parser.add_argument("--eval_eps", default=10, type=int)
-	parser.add_argument("--max_timesteps", default=1_000_000, type=int)
+	parser.add_argument("--max_timesteps", default=5_000_000, type=int)
 
 	# Recording
 	parser.add_argument("--record_videos", default=True, action=argparse.BooleanOptionalAction)
@@ -347,28 +347,27 @@ if __name__ == "__main__":
 			args.use_checkpoints = True
 
 		return args
-	for i in range(5):
-		for env in ["HalfCheetah-v5"]:#, "Ant-v5", "Hopper-v5", "ALE/Assault-v5"]:#["ALE/Assault-v5", "HalfCheetah-v5"]:#["ALE/Pong-v5", "ALE/Breakout-v5", "HalfCheetah-v5"]:#["Ant-v5", "Hopper-v5"]:#["HalfCheetah-v5"]:#,  #, , "Humanoid-v5", ]:["Humanoid-v5"]:#
-			for deterministic_actor in [True]:#[False, True]:
-				for encoder in ["td7"]:#, "nflow"]:#, "addition"]:
-					args = parser.parse_args()
+	for env in ["HalfCheetah-v5", "ALE/Assault-v5"]:#, "Ant-v5", "Hopper-v5", "ALE/Assault-v5"]:#["ALE/Assault-v5", "HalfCheetah-v5"]:#["ALE/Pong-v5", "ALE/Breakout-v5", "HalfCheetah-v5"]:#["Ant-v5", "Hopper-v5"]:#["HalfCheetah-v5"]:#,  #, , "Humanoid-v5", ]:["Humanoid-v5"]:#
+		for deterministic_actor in [True]:#[False, True]:
+			for encoder in ["td7"]:#, "nflow"]:#, "addition"]:
+				args = parser.parse_args()
 
-					args.env = env
-					args.encoder = encoder
-					args.deterministic_actor = deterministic_actor
+				args.env = env
+				args.encoder = encoder
+				args.deterministic_actor = deterministic_actor
 
-					args = apply_dynamic_defaults(args)
-					profiler_str = "_profiler" if args.profile else ""
-					actor_str = f"DeterministicActor" if args.deterministic_actor else "ProbabilisticActor"
-					args.dir_name = f"hardupdates_{i}_test_{encoder}_{args.env.replace('/', '_')}_{actor_str}_seed_{args.seed}_{int(args.max_timesteps)}{profiler_str}"
+				args = apply_dynamic_defaults(args)
+				profiler_str = "_profiler" if args.profile else ""
+				actor_str = f"DeterministicActor" if args.deterministic_actor else "ProbabilisticActor"
+				args.dir_name = f"{encoder}_{args.env.replace('/', '_')}_{actor_str}_seed_{args.seed}_{int(args.max_timesteps)}{profiler_str}"
 
-					main(args)
-					gc.collect()  # Python garbage collection
-					if torch.cuda.is_available():
-						torch.cuda.empty_cache()
-						torch.cuda.ipc_collect()
-					# For MPS (Apple Silicon) if you ever use it:
-					if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-						torch.mps.empty_cache()
+				main(args)
+				gc.collect()  # Python garbage collection
+				if torch.cuda.is_available():
+					torch.cuda.empty_cache()
+					torch.cuda.ipc_collect()
+				# For MPS (Apple Silicon) if you ever use it:
+				if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+					torch.mps.empty_cache()
 
-	
+

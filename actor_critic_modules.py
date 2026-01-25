@@ -90,10 +90,10 @@ class Critic(nn.Module):
 		return torch.cat([q1, q2], 1)
 	
 class RewardPredictor(nn.Module):
-	def __init__(self, zs_dim, action_dim, hdim=256, activ=nn.ELU):
+	def __init__(self, zs_dim, action_dim, hdim=256, activ=F.elu):
 		super(RewardPredictor, self).__init__()
 
-		self.activ = activ(inplace=True)
+		self.activ = activ
 
 		self.r1 = nn.Linear(zs_dim + action_dim + zs_dim, hdim)
 		self.r2 = nn.Linear(hdim, hdim)
