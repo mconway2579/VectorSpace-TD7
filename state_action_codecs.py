@@ -147,7 +147,7 @@ class MLPDecoder(nn.Module):
 	def __init__(self, state_dim, encoder_dim=256, hdim=256, activ=F.elu):
 		super(MLPDecoder, self).__init__()
 
-		self.activ = activ()
+		self.activ = activ
 
 		self.s1 = nn.Linear(encoder_dim, hdim)
 		self.s2 = nn.Linear(hdim, hdim)

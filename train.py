@@ -297,14 +297,14 @@ if __name__ == "__main__":
 	parser.add_argument("--env", default="HalfCheetah-v5", type=str)
 	parser.add_argument("--seed", default=0, type=int)
 	parser.add_argument("--deterministic_actor", default=True, action=argparse.BooleanOptionalAction)
-	parser.add_argument("--hard_updates", default=True, action=argparse.BooleanOptionalAction)
+	parser.add_argument("--hard_updates", default=False, action=argparse.BooleanOptionalAction)
 	parser.add_argument('--use_checkpoints', default=True, action=argparse.BooleanOptionalAction)
 
 	# Evaluation
 	parser.add_argument("--timesteps_before_training", default=25e3, type=int)
 	parser.add_argument("--eval_freq", default=5e3, type=int)
 	parser.add_argument("--eval_eps", default=10, type=int)
-	parser.add_argument("--max_timesteps", default=1_000_000, type=int)
+	parser.add_argument("--max_timesteps", default=5_000_000, type=int)
 
 	# Recording
 	parser.add_argument("--record_videos", default=True, action=argparse.BooleanOptionalAction)
