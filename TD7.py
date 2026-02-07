@@ -108,8 +108,6 @@ class Agent(object):
 		else:
 			self.decoder = MLPDecoder(state_dim, hp.encoder_dim, hp.decoder_hdim, hp.decoder_activ).to(self.device)
 		self.decoder_optimizer = torch.optim.Adam(self.decoder.parameters(), lr=hp.decoder_lr)
-		self.fixed_decoder = copy.deepcopy(self.decoder)
-		self.fixed_decoder_target = copy.deepcopy(self.decoder)
 
 
 
@@ -123,9 +121,9 @@ class Agent(object):
 		#######################
 		# CHECKPOINTS
 		#######################
-		self.checkpoint_actor = copy.deepcopy(self.actor)
-		self.checkpoint_encoder = copy.deepcopy(self.encoder)
 		self.backbone_checkpoint = copy.deepcopy(self.backbone)
+		self.checkpoint_encoder = copy.deepcopy(self.encoder)
+		self.checkpoint_actor = copy.deepcopy(self.actor)
 		self.checkpoint_critic = copy.deepcopy(self.critic)
 		self.checkpoint_decoder = copy.deepcopy(self.decoder)
 		self.checkpoint_reward_predictor = copy.deepcopy(self.reward_predictor)
@@ -328,8 +326,6 @@ class Agent(object):
 			(self.critic_target, self.critic),
 			(self.fixed_encoder_target, self.fixed_encoder),
 			(self.fixed_encoder, self.encoder),
-			(self.fixed_decoder_target, self.fixed_decoder),
-			(self.fixed_decoder, self.decoder),
 		]
 		for target, source in target_source:
 			for target_param, source_param in zip(target.parameters(), source.parameters()):
@@ -339,8 +335,6 @@ class Agent(object):
 		self.critic_target.load_state_dict(self.critic.state_dict())
 		self.fixed_encoder_target.load_state_dict(self.fixed_encoder.state_dict())
 		self.fixed_encoder.load_state_dict(self.encoder.state_dict())
-		self.fixed_decoder_target.load_state_dict(self.fixed_decoder.state_dict())
-		self.fixed_decoder.load_state_dict(self.decoder.state_dict())
 		self.fixed_backbone_target.load_state_dict(self.fixed_backbone.state_dict())
 		self.fixed_backbone.load_state_dict(self.backbone.state_dict())
 	def train(self):
@@ -461,7 +455,7 @@ class Agent(object):
 			self.checkpoint_actor.load_state_dict(self.actor.state_dict())
 			self.checkpoint_encoder.load_state_dict(self.fixed_encoder.state_dict())
 			self.checkpoint_critic.load_state_dict(self.critic.state_dict())
-			self.checkpoint_decoder.load_state_dict(self.fixed_decoder.state_dict())
+			self.checkpoint_decoder.load_state_dict(self.decoder.state_dict())
 			self.checkpoint_reward_predictor.load_state_dict(self.reward_predictor.state_dict())
 			self.train_and_reset()
 
@@ -509,8 +503,6 @@ class Agent(object):
 			"fixed_encoder_target": self.fixed_encoder_target.state_dict(),
 
 			"decoder": self.decoder.state_dict(),
-			"fixed_decoder": self.fixed_decoder.state_dict(),
-			"fixed_decoder_target": self.fixed_decoder_target.state_dict(),
 
 			"reward_predictor": self.reward_predictor.state_dict(),
 
@@ -593,8 +585,6 @@ class Agent(object):
 		agent.fixed_encoder_target.load_state_dict(checkpoint["fixed_encoder_target"])
 
 		agent.decoder.load_state_dict(checkpoint["decoder"])
-		agent.fixed_decoder.load_state_dict(checkpoint["fixed_decoder"])
-		agent.fixed_decoder_target.load_state_dict(checkpoint["fixed_decoder_target"])
 
 		agent.actor.load_state_dict(checkpoint["actor"])
 		agent.actor_target.load_state_dict(checkpoint["actor_target"])
@@ -647,8 +637,6 @@ class Agent(object):
 		self.fixed_encoder_target.to(device)
 
 		self.decoder.to(device)
-		self.fixed_decoder.to(device)
-		self.fixed_decoder_target.to(device)
 
 		self.actor.to(device)
 		self.actor_target.to(device)
